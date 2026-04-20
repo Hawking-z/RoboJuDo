@@ -50,8 +50,8 @@ class g1(RlPipelineCfg):
         # KeyboardCtrlCfg(),
     ]
 
-    policy: G1UnitreePolicyCfg = G1UnitreePolicyCfg()
-    # policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
+    # policy: G1UnitreePolicyCfg = G1UnitreePolicyCfg()
+    policy: G1UnitreeWoGaitPolicyCfg = G1UnitreeWoGaitPolicyCfg()
     # policy: G1AmoPolicyCfg = G1AmoPolicyCfg()
 
     # run_fullspeed: bool = env.is_sim

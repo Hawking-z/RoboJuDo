@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import field_validator, model_validator
 
 from robojudo.config import ASSETS_DIR, Config
@@ -113,6 +115,91 @@ class UnitreeWoGaitPolicyCfg(PolicyCfg):
         [1.0, 0.0, -1.0],
         [1.0, 0.0, -1.0],
     ]
+
+
+class CustomPolicyCfg(PolicyCfg):
+    policy_type: str = "CustomPolicy"
+    robot: str = "g1"
+    policy_name: str = "policy_0"
+
+    model_backend: str = "torchscript"
+    model_dir: str = ""
+    model_file: str = ""
+    model_suffix: str = ""
+    robot_config_file: str = ""
+
+    obs_heads: list[str] = []
+    onnx_input_name: str | None = None
+    onnx_output_name: str | None = None
+
+    action_scale: list[float] = []
+    action_clip: float | None = None
+    action_beta: float = 1.0
+
+    obs_dof: DoFConfig = DoFConfig(joint_names=["placeholder"], default_pos=[0.0])
+    action_dof: DoFConfig = obs_dof
+
+    max_cmd: list[float] = [0.8, 0.5, 1.57]
+    commands_map: list[list[float]] = [
+        [-1.0, 0.0, 1.0],
+        [1.0, 0.0, -1.0],
+        [1.0, 0.0, -1.0],
+    ]
+
+    @property
+    def policy_file(self) -> str:
+        if self.model_file:
+            return self.model_file
+        if not self.model_dir:
+            return ""
+
+        suffix = self.model_suffix
+        if not suffix:
+            suffix = ".onnx" if self.model_backend == "onnx" else ".jit"
+        elif not suffix.startswith("."):
+            suffix = f".{suffix}"
+        return (Path(self.model_dir) / f"{self.policy_name}{suffix}").as_posix()
+
+    @field_validator("model_backend")
+    def check_model_backend(cls, v):
+        backend = v.lower()
+        if backend in ["torch", "torchscript", "jit", "pt"]:
+            return "torchscript"
+        if backend == "onnx":
+            return "onnx"
+        raise ValueError("model_backend must be one of: torchscript, jit, pt, onnx")
+
+    @model_validator(mode="after")
+    def load_robot_config(self):
+        if not self.robot_config_file:
+            return self
+
+        from robojudo.policy.utils.robot_config import RobotConfig
+
+        robot_cfg = RobotConfig.from_yaml_file(self.robot_config_file)
+        if abs(robot_cfg.exp_avg_decay - 1.0) > 1e-6:
+            raise ValueError(
+                "CustomPolicy currently does not support exp_avg_decay != 1.0. "
+                "The training filter runs inside the simulator decimation loop, "
+                "which RoboJuDo does not reproduce in policy inference."
+            )
+
+        dof_cfg = DoFConfig(
+            joint_names=robot_cfg.dof.isaac_order,
+            default_pos=robot_cfg.dof.default_pos.tolist(),
+            stiffness=robot_cfg.dof.kp.tolist(),
+            damping=robot_cfg.dof.kd.tolist(),
+            torque_limits=robot_cfg.dof.torque_limits.tolist(),
+        )
+        self.obs_dof = dof_cfg
+        self.action_dof = dof_cfg
+
+        if robot_cfg.infer_rate > 0:
+            self.freq = int(round(robot_cfg.infer_rate))
+        self.action_scale = robot_cfg.dof.scale.tolist()
+        self.action_clip = robot_cfg.clip_actions if robot_cfg.clip_actions > 0 else None
+        self.obs_heads = list(robot_cfg.obs_map.keys())
+        return self
 
 
 class SmoothPolicyCfg(PolicyCfg):

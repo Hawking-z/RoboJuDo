@@ -24,6 +24,7 @@ from .env.g1_real_env_cfg import G1RealEnvCfg, G1UnitreeCfg  # noqa: F401
 from .policy.g1_amo_policy_cfg import G1AmoPolicyCfg  # noqa: F401
 from .policy.g1_asap_policy_cfg import G1AsapLocoPolicyCfg, G1AsapPolicyCfg  # noqa: F401
 from .policy.g1_beyondmimic_policy_cfg import G1BeyondMimicPolicyCfg  # noqa: F401
+from .policy.g1_custom_policy_cfg import G1CustomPolicy2Cfg, G1CustomPolicyCfg  # noqa: F401
 from .policy.g1_h2h_policy_cfg import G1H2HPolicyCfg  # noqa: F401
 from .policy.g1_kungfubot_policy_cfg import G1KungfuBotGeneralPolicyCfg, G1KungfuBotPolicyCfg  # noqa: F401
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
@@ -39,10 +40,36 @@ Add your custom config here.
 @cfg_registry.register
 class g1_dev(RlPipelineCfg):
     robot: str = "g1"
-    env: G1_23MujocoEnvCfg = G1_23MujocoEnvCfg()
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg()
 
     ctrl: list[KeyboardCtrlCfg] = [
-        KeyboardCtrlCfg(),
+        JoystickCtrlCfg(),
     ]
 
     policy: G1UnitreePolicyCfg = G1UnitreePolicyCfg()
+
+
+@cfg_registry.register
+class g1_custom_policy(RlPipelineCfg):
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg()
+
+    ctrl: list[JoystickCtrlCfg | KeyboardCtrlCfg] = [
+        JoystickCtrlCfg(),
+        KeyboardCtrlCfg(),
+    ]
+
+    policy: G1CustomPolicyCfg = G1CustomPolicyCfg()
+
+
+@cfg_registry.register
+class g1_custom_policy_2(RlPipelineCfg):
+    robot: str = "g1"
+    env: G1MujocoEnvCfg = G1MujocoEnvCfg()
+
+    ctrl: list[JoystickCtrlCfg | KeyboardCtrlCfg] = [
+        JoystickCtrlCfg(),
+        KeyboardCtrlCfg(),
+    ]
+
+    policy: G1CustomPolicy2Cfg = G1CustomPolicy2Cfg()

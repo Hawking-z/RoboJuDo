@@ -16,6 +16,7 @@ CFG_REGISTRY: dict[str, tuple[str, str]] = {
     "g1_smooth_policy": (".policy.g1_smooth_policy_cfg", "G1SmoothPolicyCfg"),
     "g1_amo_policy": (".policy.g1_amo_policy_cfg", "G1AmoPolicyCfg"),
     "g1_beyondmimic_policy": (".policy.g1_beyondmimic_policy_cfg", "G1BeyondMimicPolicyCfg"),
+    "g1_custom_policy": (".policy.g1_custom_policy_cfg", "G1CustomPolicyCfg"),
     # ctrl
     "keyboard_ctrl": ("robojudo.controller.keyboard_ctrl", "KeyboardCtrlCfg"),
     "joystick_ctrl": ("robojudo.controller.joystick_ctrl", "JoystickCtrlCfg"),
