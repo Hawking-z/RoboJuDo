@@ -1,5 +1,6 @@
 import logging
 import time
+from pathlib import Path
 
 import mujoco
 import mujoco_viewer
@@ -8,7 +9,9 @@ import numpy as np
 from robojudo.environment import Environment, env_registry
 from robojudo.environment.env_cfgs import MujocoEnvCfg
 from robojudo.environment.perception import MujocoCameraProvider, PerceptionManager, TerrainHeightProvider
+from robojudo.environment.utils.mujoco_terrain_generator import make_default_complex_terrain, make_empty_terrain
 from robojudo.environment.utils.mujoco_viz import MujocoVisualizer
+from robojudo.config.global_path import ROOT_DIR
 from robojudo.utils.util_func import quat_rotate_inverse_np, quatToEuler
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ class MujocoEnv(Environment):
         self.sim_decimation = cfg_env.sim_decimation
         self.control_dt = self.sim_dt * self.sim_decimation
 
+        self._prepare_terrain_file()
         self.perception_manager = self._build_perception_manager()
         self.model = self._build_model(cfg_env.xml)
         self.model.opt.timestep = self.sim_dt
@@ -82,15 +86,36 @@ class MujocoEnv(Environment):
             groups.extend(self.cfg_env.external_perception.terrain.raycast.geom_groups)
         return sorted(set(int(group) for group in groups))
 
+    def _resolve_xml_path(self, xml_path: str) -> Path:
+        path = Path(xml_path)
+        if path.is_absolute():
+            return path
+        return ROOT_DIR / path
+
+    def _terrain_include_path(self) -> Path:
+        xml_path = self._resolve_xml_path(self.cfg_env.xml)
+        return xml_path.parent.parent / "terrain" / "complex_terrain.xml"
+
+    def _prepare_terrain_file(self):
+        terrain_file = self._terrain_include_path()
+        terrain_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.cfg_env.terrain.type == "plane":
+            make_empty_terrain(terrain_file.as_posix())
+            return
+
+        make_default_complex_terrain(terrain_file.as_posix())
+
     def _build_model(self, xml_path: str):
+        xml_file = self._resolve_xml_path(xml_path)
         if not self.perception_manager.enabled:
-            return mujoco.MjModel.from_xml_path(xml_path)  # pyright: ignore[reportAttributeAccessIssue]
+            return mujoco.MjModel.from_xml_path(xml_file.as_posix())  # pyright: ignore[reportAttributeAccessIssue]
 
         try:
-            spec = mujoco.MjSpec.from_file(xml_path)
+            spec = mujoco.MjSpec.from_file(xml_file.as_posix())
         except TypeError:
             spec = mujoco.MjSpec()
-            spec.from_file(xml_path)
+            spec.from_file(xml_file.as_posix())
         self.perception_manager.attach_to_spec(spec)
         return spec.compile()
 

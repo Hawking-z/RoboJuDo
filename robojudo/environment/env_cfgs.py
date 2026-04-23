@@ -80,6 +80,10 @@ class TerrainPerceptionCfg(Config):
     height_samplers: dict[str, TerrainHeightSamplerCfg] = {}
 
 
+class MujocoTerrainCfg(Config):
+    type: Literal["plane", "complex"] = "plane"
+
+
 class ExternalPerceptionCfg(Config):
     enabled: bool = False
     render_visible_geom_groups: list[int] = [0, 1, 2]
@@ -125,6 +129,7 @@ class MujocoEnvCfg(EnvCfg):
     sim_decimation: int = 20
 
     visualize_extras: bool = True  # TODO: remove
+    terrain: MujocoTerrainCfg = MujocoTerrainCfg()
     external_perception: ExternalPerceptionCfg = ExternalPerceptionCfg()
 
 

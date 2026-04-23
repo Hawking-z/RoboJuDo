@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
@@ -395,6 +396,39 @@ class TestCustomPolicy(unittest.TestCase):
         self.assertIn("front", cfg.external_perception.cameras)
         self.assertIn("height_scan", cfg.external_perception.terrain.height_samplers)
 
+    def test_mujoco_env_cfg_accepts_terrain_type(self):
+        cfg = MujocoEnvCfg(
+            xml="robot.xml",
+            dof=_minimal_dof_cfg(),
+            terrain={
+                "type": "plane",
+            },
+        )
+
+        self.assertEqual(cfg.terrain.type, "plane")
+
+    def test_mujoco_terrain_generator_supports_empty_and_default_complex_terrain(self):
+        from robojudo.environment.utils.mujoco_terrain_generator import (
+            make_default_complex_terrain,
+            make_empty_terrain,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            terrain_dir = Path(tmpdir)
+            plane_file = terrain_dir / "plane.xml"
+            complex_file = terrain_dir / "complex.xml"
+
+            make_empty_terrain(plane_file.as_posix())
+            make_default_complex_terrain(complex_file.as_posix())
+
+            plane_xml = plane_file.read_text(encoding="utf-8")
+            complex_xml = complex_file.read_text(encoding="utf-8")
+
+        self.assertIn("<worldbody>", plane_xml)
+        self.assertNotIn('type="box"', plane_xml)
+        self.assertIn('name="stairs_col_1"', complex_xml)
+        self.assertIn('name="platform_col"', complex_xml)
+
     def test_g1_custom_perception_pipeline_uses_camera_and_height_debug_env(self):
         from robojudo.config.g1.g1_custom_cfg import g1_custom_policy_perception
 
@@ -526,3 +560,57 @@ class TestCustomPolicy(unittest.TestCase):
         groups = env._render_visible_geom_groups()
 
         self.assertEqual(groups, [0, 1, 2, 3])
+
+    def test_mujoco_env_writes_plane_terrain_include_file_from_config(self):
+        from robojudo.environment.mujoco_env import MujocoEnv
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            robot_dir = root / "robots" / "g1"
+            terrain_dir = root / "robots" / "terrain"
+            robot_dir.mkdir(parents=True)
+            terrain_dir.mkdir(parents=True)
+
+            xml_path = robot_dir / "robot.xml"
+            xml_path.write_text("<mujoco/>", encoding="utf-8")
+
+            env = object.__new__(MujocoEnv)
+            env.cfg_env = MujocoEnvCfg(
+                xml=xml_path.as_posix(),
+                dof=_minimal_dof_cfg(),
+                terrain={"type": "plane"},
+            )
+
+            env._prepare_terrain_file()
+
+            terrain_xml = (terrain_dir / "complex_terrain.xml").read_text(encoding="utf-8")
+
+        self.assertIn("<worldbody>", terrain_xml)
+        self.assertNotIn('type="box"', terrain_xml)
+
+    def test_mujoco_env_writes_default_complex_terrain_include_file_from_config(self):
+        from robojudo.environment.mujoco_env import MujocoEnv
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            robot_dir = root / "robots" / "g1"
+            terrain_dir = root / "robots" / "terrain"
+            robot_dir.mkdir(parents=True)
+            terrain_dir.mkdir(parents=True)
+
+            xml_path = robot_dir / "robot.xml"
+            xml_path.write_text("<mujoco/>", encoding="utf-8")
+
+            env = object.__new__(MujocoEnv)
+            env.cfg_env = MujocoEnvCfg(
+                xml=xml_path.as_posix(),
+                dof=_minimal_dof_cfg(),
+                terrain={"type": "complex"},
+            )
+
+            env._prepare_terrain_file()
+
+            terrain_xml = (terrain_dir / "complex_terrain.xml").read_text(encoding="utf-8")
+
+        self.assertIn('name="stairs_col_1"', terrain_xml)
+        self.assertIn('name="platform_col"', terrain_xml)

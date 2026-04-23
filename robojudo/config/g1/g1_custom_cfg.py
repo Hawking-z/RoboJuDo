@@ -4,14 +4,7 @@ from robojudo.controller.ctrl_cfgs import (
     KeyboardCtrlCfg,  # noqa: F401
     UnitreeCtrlCfg,  # noqa: F401
 )
-from robojudo.environment.env_cfgs import (
-    ExternalPerceptionCfg,
-    ExternalPerceptionDebugCfg,
-    MujocoCameraPerceptionCfg,
-    TerrainHeightSamplerCfg,
-    TerrainPerceptionCfg,
-    TerrainRaycastCfg,
-)
+
 from robojudo.pipeline.pipeline_cfgs import (
     RlLocoMimicPipelineCfg,  # noqa: F401
     RlMultiPolicyPipelineCfg,  # noqa: F401
@@ -27,7 +20,12 @@ from .ctrl.g1_motion_ctrl_cfg import (  # noqa: F401
 )
 from .ctrl.g1_twist_redis_ctrl_cfg import G1TwistRedisCtrlCfg  # noqa: F401
 from .env.g1_dummy_env_cfg import G1DummyEnvCfg  # noqa: F401
-from .env.g1_mujuco_env_cfg import G1_12MujocoEnvCfg, G1_23MujocoEnvCfg, G1MujocoEnvCfg  # noqa: F401
+from .env.g1_mujuco_env_cfg import (
+        G1_12MujocoEnvCfg, 
+        G1_23MujocoEnvCfg, 
+        G1MujocoEnvCfg,
+        G1PerceptionMujocoEnvCfg,
+)
 from .env.g1_real_env_cfg import G1RealEnvCfg, G1UnitreeCfg  # noqa: F401
 from .policy.g1_amo_policy_cfg import G1AmoPolicyCfg  # noqa: F401
 from .policy.g1_asap_policy_cfg import G1AsapLocoPolicyCfg, G1AsapPolicyCfg  # noqa: F401
@@ -43,48 +41,6 @@ from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPol
 """
 Add your custom config here.
 """
-
-
-class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
-    external_perception: ExternalPerceptionCfg = ExternalPerceptionCfg(
-        enabled=True,
-        cameras={
-            "front": MujocoCameraPerceptionCfg(
-                link_name="torso_link",
-                resolution=[320, 240],
-                hfov=75.0,
-                pos=[0.22, 0.0, 0.10],
-                rot=[0.0, 0.30, 0.0],
-                near=0.2,
-                far=4.0,
-                render_mode="both",
-            ),
-        },
-        terrain=TerrainPerceptionCfg(
-            raycast=TerrainRaycastCfg(
-                origin_z_offset=5.0,
-                geom_groups=[3],
-                miss_value=100.0,
-            ),
-            height_samplers={
-                "height_scan": TerrainHeightSamplerCfg(
-                    link="torso_link",
-                    follow="yaw",
-                    offset=[0.10, 0.0, 0.0],
-                    points={
-                        "type": "grid",
-                        "size": [0.8, 0.6],
-                        "resolution": [0.1, 0.1],
-                    },
-                ),
-            },
-        ),
-        debug=ExternalPerceptionDebugCfg(
-            show_camera_windows=True,
-            draw_height_points=True,
-        ),
-    )
-
 
 @cfg_registry.register
 class g1_dev(RlPipelineCfg):

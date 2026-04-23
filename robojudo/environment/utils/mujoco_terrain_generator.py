@@ -517,10 +517,6 @@ class TerrainBuilder:
             f.write("\n\n".join(lines))
 
 
-# =========================================================
-# 示例
-# =========================================================
-
 def make_empty_terrain(out_file="terrain.xml"):
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(
@@ -530,11 +526,10 @@ def make_empty_terrain(out_file="terrain.xml"):
             "</mujoco>\n"
         )
 
-if __name__ == "__main__":
-    file = "assets/robots/terrain/complex_terrain.xml"
+
+def make_default_complex_terrain(out_file="terrain.xml"):
     tb = TerrainBuilder()
 
-    # collision geom
     tb.add_stairs_up(
         x_start=1.0,
         y=0.0,
@@ -555,4 +550,9 @@ if __name__ == "__main__":
         role="collision",
     )
 
-    tb.export_xml(file)
+    tb.export_xml(out_file)
+
+
+if __name__ == "__main__":
+    file = "assets/robots/terrain/complex_terrain.xml"
+    make_default_complex_terrain(file)
