@@ -5,13 +5,93 @@ from types import SimpleNamespace
 
 import numpy as np
 import yaml
+import mujoco
 
+from robojudo.environment.base_env import Environment
+from robojudo.environment.env_cfgs import EnvCfg, MujocoEnvCfg
 from robojudo.policy.custom_policy import CustomPolicy
 from robojudo.policy.policy_cfgs import CustomPolicyCfg
 from robojudo.policy.utils.robot_config import RobotConfig
+from robojudo.tools.tool_cfgs import DoFConfig
+
+
+def _minimal_dof_cfg():
+    return DoFConfig(
+        joint_names=["joint_0"],
+        default_pos=[0.0],
+        stiffness=[1.0],
+        damping=[0.1],
+        torque_limits=[10.0],
+        position_limits=[[-1.0, 1.0]],
+    )
+
+
+def _external_sensor_robot_config(sensor_name: str, sensor_shape: list[int]) -> Path:
+    source = Path("assets/models/g1/custom/exported_1/robot_config.yaml")
+    robot_cfg = yaml.safe_load(source.read_text())
+    robot_cfg["obs_config"] = {
+        "sensors": {
+            sensor_name: {
+                "shape": sensor_shape,
+            }
+        },
+        "external_obs": {
+            "sources": [sensor_name],
+            "history_len": 1,
+            "flatten": True,
+        },
+    }
+
+    with NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp:
+        yaml.safe_dump(robot_cfg, tmp, sort_keys=False)
+        return Path(tmp.name)
+
+
+class _DummyEnvironmentForExternalData(Environment):
+    def __init__(self):
+        super().__init__(
+            cfg_env=EnvCfg(
+                env_type="DummyTestEnv",
+                xml="robot.xml",
+                dof=_minimal_dof_cfg(),
+            ),
+            device="cpu",
+        )
+
+    def self_check(self):
+        return None
+
+    def reset(self):
+        return None
+
+    def update(self):
+        return None
+
+    def step(self, pd_target, hand_pose=None):
+        return None
+
+    def shutdown(self):
+        return None
+
+    def set_gains(self, stiffness, damping):
+        return None
 
 
 class TestCustomPolicy(unittest.TestCase):
+    def test_environment_get_data_merges_external_sensor_outputs(self):
+        env = _DummyEnvironmentForExternalData()
+
+        env.set_extra_env_data(
+            {
+                "camera_front_depth": np.ones((4, 4), dtype=np.float32),
+                "height_scan": np.arange(6, dtype=np.float32),
+            }
+        )
+        data = env.get_data()
+
+        np.testing.assert_allclose(data["camera_front_depth"], np.ones((4, 4), dtype=np.float32))
+        np.testing.assert_allclose(data["height_scan"], np.arange(6, dtype=np.float32))
+
     def test_robot_config_supports_regex_dof_rules_with_last_match_wins(self):
         source = Path("assets/models/g1/custom/exported_1/robot_config.yaml")
         robot_cfg = yaml.safe_load(source.read_text())
@@ -259,3 +339,190 @@ class TestCustomPolicy(unittest.TestCase):
         _, extras = policy.get_observation(env_data, ctrl_data)
 
         np.testing.assert_allclose(extras["commands"], np.array([1.2, 0.0, 0.0], dtype=np.float32))
+
+    def test_custom_policy_reads_external_sensor_from_mapping_env_data(self):
+        robot_config_path = _external_sensor_robot_config("camera_front_depth", [2, 2])
+        try:
+            cfg = CustomPolicyCfg(
+                model_backend="onnx",
+                model_dir="exported_1",
+                policy_name="policy_0",
+                robot_config_file=robot_config_path.as_posix(),
+                disable_autoload=True,
+            )
+            cfg.obs_heads = ["external_obs"]
+            policy = CustomPolicy(cfg_policy=cfg, device="cpu")
+
+            env_data = {
+                "camera_front_depth": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+            }
+            obs, extras = policy.get_observation(env_data, {})
+
+            np.testing.assert_allclose(obs, np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32))
+            self.assertIn("external_obs", extras["obs_outputs"])
+        finally:
+            robot_config_path.unlink(missing_ok=True)
+
+    def test_mujoco_env_cfg_accepts_external_perception_camera_and_height_sampler(self):
+        cfg = MujocoEnvCfg(
+            xml="robot.xml",
+            dof=_minimal_dof_cfg(),
+            external_perception={
+                "enabled": True,
+                "cameras": {
+                    "front": {
+                        "link_name": "head",
+                        "resolution": [64, 48],
+                        "render_mode": "depth",
+                    }
+                },
+                "terrain": {
+                    "height_samplers": {
+                        "height_scan": {
+                            "link": "torso_link",
+                            "points": {
+                                "type": "grid",
+                                "size": [0.4, 0.2],
+                                "resolution": [0.2, 0.2],
+                            },
+                        }
+                    }
+                },
+            },
+        )
+
+        self.assertTrue(cfg.external_perception.enabled)
+        self.assertIn("front", cfg.external_perception.cameras)
+        self.assertIn("height_scan", cfg.external_perception.terrain.height_samplers)
+
+    def test_g1_custom_perception_pipeline_uses_camera_and_height_debug_env(self):
+        from robojudo.config.g1.g1_custom_cfg import g1_custom_policy_perception
+
+        cfg = g1_custom_policy_perception()
+
+        self.assertTrue(cfg.env.external_perception.enabled)
+        self.assertTrue(cfg.env.external_perception.debug.show_camera_windows)
+        self.assertEqual(cfg.env.external_perception.render_visible_geom_groups, [0, 1, 2])
+        self.assertIn("front", cfg.env.external_perception.cameras)
+        self.assertEqual(cfg.env.external_perception.cameras["front"].render_mode, "both")
+        self.assertIn("height_scan", cfg.env.external_perception.terrain.height_samplers)
+        self.assertEqual(cfg.env.external_perception.terrain.raycast.geom_groups, [3])
+
+    def test_mujoco_camera_find_body_supports_nested_body_lookup(self):
+        from robojudo.environment.perception.mujoco_camera import _find_body
+
+        spec = mujoco.MjSpec.from_string(
+            "<mujoco><worldbody><body name='pelvis'><body name='torso_link'/></body><body name='head_link'/></worldbody></mujoco>"
+        )
+
+        body = _find_body(spec, "head_link")
+
+        self.assertIsNotNone(body)
+        self.assertEqual(body.name, "head_link")
+
+    def test_terrain_height_yaw_transform_supports_many_points(self):
+        from robojudo.environment.env_cfgs import ExternalPerceptionDebugCfg, TerrainPerceptionCfg
+        from robojudo.environment.perception.terrain_height import TerrainHeightProvider
+
+        provider = TerrainHeightProvider(TerrainPerceptionCfg(), ExternalPerceptionDebugCfg())
+        local_points = np.zeros((1, 63, 3), dtype=np.float64)
+        local_points[0, :, 0] = np.linspace(-1.0, 1.0, 63)
+        link_pos = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
+        link_quat = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
+
+        world = provider._transform_local_points(
+            local_points=local_points,
+            link_pos=link_pos,
+            link_quat=link_quat,
+            follow="yaw",
+            offset=[0.0, 0.0, 0.0],
+        )
+
+        self.assertEqual(world.shape, (1, 63, 3))
+        np.testing.assert_allclose(world[0, :, 0], local_points[0, :, 0])
+        np.testing.assert_allclose(world[0, :, 1], 0.0)
+        np.testing.assert_allclose(world[0, :, 2], 1.0)
+
+    def test_terrain_height_raycast_ignores_robot_geom_groups(self):
+        from robojudo.environment.env_cfgs import (
+            ExternalPerceptionDebugCfg,
+            TerrainHeightSamplerCfg,
+            TerrainPerceptionCfg,
+            TerrainRaycastCfg,
+        )
+        from robojudo.environment.perception.terrain_height import TerrainHeightProvider
+
+        model = mujoco.MjModel.from_xml_string(
+            """
+            <mujoco>
+              <worldbody>
+                <geom name='ground' type='plane' size='2 2 0.1'/>
+                <body name='torso' pos='0 0 0.4'>
+                  <freejoint/>
+                  <geom name='robot' type='sphere' size='0.2'/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        )
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        provider = TerrainHeightProvider(
+            TerrainPerceptionCfg(
+                raycast=TerrainRaycastCfg(geom_groups=[3], miss_value=100.0),
+                height_samplers={
+                    "height_scan": TerrainHeightSamplerCfg(
+                        link="torso",
+                        follow="none",
+                        points=[[0.0, 0.0, 0.0]],
+                    )
+                },
+            ),
+            ExternalPerceptionDebugCfg(),
+        )
+        provider.bind(model, data)
+
+        outputs = provider.refresh()
+
+        self.assertIn("height_scan", outputs)
+        self.assertAlmostEqual(float(np.asarray(outputs["height_scan"]).reshape(-1)[0]), 0.0, places=4)
+
+    def test_mujoco_env_marks_exit_when_viewer_is_closed(self):
+        from robojudo.environment.mujoco_env import MujocoEnv
+
+        class _ClosedViewer:
+            is_alive = False
+
+            def close(self):
+                return None
+
+        env = object.__new__(MujocoEnv)
+        env.viewer = _ClosedViewer()
+        env._shutdown_requested = False
+
+        should_continue = env._handle_viewer_state()
+
+        self.assertFalse(should_continue)
+        self.assertTrue(env.should_exit)
+
+    def test_mujoco_env_render_visible_groups_include_terrain_groups(self):
+        from robojudo.environment.mujoco_env import MujocoEnv
+
+        env = object.__new__(MujocoEnv)
+        env.cfg_env = MujocoEnvCfg(
+            xml="robot.xml",
+            dof=_minimal_dof_cfg(),
+            external_perception={
+                "enabled": True,
+                "terrain": {
+                    "raycast": {
+                        "geom_groups": [3],
+                    }
+                },
+                "render_visible_geom_groups": [0, 1, 2],
+            },
+        )
+
+        groups = env._render_visible_geom_groups()
+
+        self.assertEqual(groups, [0, 1, 2, 3])

@@ -1,9 +1,99 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import model_validator
 
 from robojudo.config import Config
 from robojudo.tools.tool_cfgs import DoFConfig, ForwardKinematicCfg, ZedOdometryCfg
+
+
+class ExternalPerceptionDebugCfg(Config):
+    show_camera_windows: bool = False
+    draw_height_points: bool = True
+
+
+class MujocoCameraPerceptionCfg(Config):
+    enabled: bool = True
+    link_name: str
+    resolution: list[int] = [64, 48]
+    hfov: float = 58.0
+    pos: list[float] = [0.0, 0.0, 0.0]
+    rot: list[float] = [0.0, 0.0, 0.0]
+    near: float = 0.3
+    far: float = 3.0
+    render_mode: Literal["depth", "color", "both"] = "depth"
+    depth_output: str | None = None
+    color_output: str | None = None
+
+    def depth_output_key(self, name: str) -> str:
+        return self.depth_output or f"camera_{name}_depth"
+
+    def color_output_key(self, name: str) -> str:
+        return self.color_output or f"camera_{name}_color"
+
+    @model_validator(mode="after")
+    def validate_camera(self):
+        if len(self.resolution) != 2 or any(int(dim) <= 0 for dim in self.resolution):
+            raise ValueError("camera resolution must be [width, height] with positive integers")
+        if len(self.pos) != 3:
+            raise ValueError("camera pos must contain 3 values")
+        if len(self.rot) != 3:
+            raise ValueError("camera rot must contain 3 values")
+        if self.near <= 0.0:
+            raise ValueError("camera near must be positive")
+        if self.far <= self.near:
+            raise ValueError("camera far must be greater than near")
+        return self
+
+
+class TerrainRaycastCfg(Config):
+    origin_z_offset: float = 5.0
+    geom_groups: list[int] = [3]
+    miss_value: float = 100.0
+
+    @model_validator(mode="after")
+    def validate_raycast(self):
+        if any(group < 0 or group >= 6 for group in self.geom_groups):
+            raise ValueError("terrain geom_groups must be within [0, 5]")
+        return self
+
+
+class TerrainHeightSamplerCfg(Config):
+    enabled: bool = True
+    link: str
+    follow: Literal["none", "yaw", "full"] = "yaw"
+    offset: list[float] = [0.0, 0.0, 0.0]
+    points: Any
+    output_key: str | None = None
+
+    def resolved_output_key(self, name: str) -> str:
+        return self.output_key or name
+
+    @model_validator(mode="after")
+    def validate_sampler(self):
+        if len(self.offset) != 3:
+            raise ValueError("height sampler offset must contain 3 values")
+        return self
+
+
+class TerrainPerceptionCfg(Config):
+    raycast: TerrainRaycastCfg = TerrainRaycastCfg()
+    height_samplers: dict[str, TerrainHeightSamplerCfg] = {}
+
+
+class ExternalPerceptionCfg(Config):
+    enabled: bool = False
+    render_visible_geom_groups: list[int] = [0, 1, 2]
+    cameras: dict[str, MujocoCameraPerceptionCfg] = {}
+    terrain: TerrainPerceptionCfg = TerrainPerceptionCfg()
+    debug: ExternalPerceptionDebugCfg = ExternalPerceptionDebugCfg()
+
+    @property
+    def has_enabled_outputs(self) -> bool:
+        if not self.enabled:
+            return False
+        if any(camera.enabled for camera in self.cameras.values()):
+            return True
+        return any(sampler.enabled for sampler in self.terrain.height_samplers.values())
 
 
 class EnvCfg(Config):
@@ -35,6 +125,7 @@ class MujocoEnvCfg(EnvCfg):
     sim_decimation: int = 20
 
     visualize_extras: bool = True  # TODO: remove
+    external_perception: ExternalPerceptionCfg = ExternalPerceptionCfg()
 
 
 class RobotEnvCfg(EnvCfg):

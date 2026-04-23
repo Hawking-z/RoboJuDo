@@ -7,6 +7,7 @@ import numpy as np
 
 from robojudo.environment import Environment, env_registry
 from robojudo.environment.env_cfgs import MujocoEnvCfg
+from robojudo.environment.perception import MujocoCameraProvider, PerceptionManager, TerrainHeightProvider
 from robojudo.environment.utils.mujoco_viz import MujocoVisualizer
 from robojudo.utils.util_func import quat_rotate_inverse_np, quatToEuler
 
@@ -25,7 +26,8 @@ class MujocoEnv(Environment):
         self.sim_decimation = cfg_env.sim_decimation
         self.control_dt = self.sim_dt * self.sim_decimation
 
-        self.model = mujoco.MjModel.from_xml_path(cfg_env.xml)  # pyright: ignore[reportAttributeAccessIssue]
+        self.perception_manager = self._build_perception_manager()
+        self.model = self._build_model(cfg_env.xml)
         self.model.opt.timestep = self.sim_dt
         self.data = mujoco.MjData(self.model)  # pyright: ignore[reportAttributeAccessIssue]
         # mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
@@ -42,16 +44,55 @@ class MujocoEnv(Environment):
         self.viewer.cam.distance = 3.0
         self.viewer.cam.elevation = -10.0
         self.viewer.cam.azimuth = 180.0
+        self.viewer.vopt.geomgroup[:] = 0
+        for group in self._render_visible_geom_groups():
+            self.viewer.vopt.geomgroup[group] = 1
         # self.viewer._paused = True
-
         if cfg_env.visualize_extras:
             self.visualizer = MujocoVisualizer(self.viewer)
         else:
             self.visualizer = None
+        self.perception_manager.bind(self.model, self.data, viewer=self.viewer)
 
         self.last_time = time.time()
 
         self.update()  # get initial state
+
+    def _build_perception_manager(self) -> PerceptionManager:
+        perception_cfg = self.cfg_env.external_perception
+        if not perception_cfg.has_enabled_outputs:
+            return PerceptionManager()
+
+        providers = []
+        if perception_cfg.cameras:
+            providers.append(
+                MujocoCameraProvider(
+                    perception_cfg.cameras,
+                    perception_cfg.debug,
+                    visible_geom_groups=self._render_visible_geom_groups(),
+                )
+            )
+        if perception_cfg.terrain.height_samplers:
+            providers.append(TerrainHeightProvider(perception_cfg.terrain, perception_cfg.debug))
+        return PerceptionManager(providers)
+
+    def _render_visible_geom_groups(self) -> list[int]:
+        groups = list(self.cfg_env.external_perception.render_visible_geom_groups)
+        if self.cfg_env.external_perception.enabled:
+            groups.extend(self.cfg_env.external_perception.terrain.raycast.geom_groups)
+        return sorted(set(int(group) for group in groups))
+
+    def _build_model(self, xml_path: str):
+        if not self.perception_manager.enabled:
+            return mujoco.MjModel.from_xml_path(xml_path)  # pyright: ignore[reportAttributeAccessIssue]
+
+        try:
+            spec = mujoco.MjSpec.from_file(xml_path)
+        except TypeError:
+            spec = mujoco.MjSpec()
+            spec.from_file(xml_path)
+        self.perception_manager.attach_to_spec(spec)
+        return spec.compile()
 
     def reborn(self, init_qpos=None):
         if init_qpos is not None:
@@ -119,15 +160,21 @@ class MujocoEnv(Environment):
             self._torso_quat = fk_info[self._torso_name]["quat"]
             self._torso_pos = fk_info[self._torso_name]["pos"]
 
+        self.set_extra_env_data(self.perception_manager.refresh())
+
+    def _handle_viewer_state(self) -> bool:
+        if self.viewer is None:
+            return True
+        if self.viewer.is_alive:
+            return True
+        self.shutdown()
+        return False
+
     def step(self, pd_target, hand_pose=None):
         assert len(pd_target) == self.num_dofs, "pd_target len should be num_dofs of env"
 
         if hand_pose is not None:
             logger.info("Hand pose-->", hand_pose)
-
-        self.viewer.cam.lookat = self.data.qpos.astype(np.float32)[:3]
-        if self.viewer.is_alive:
-            self.viewer.render()
 
         for _ in range(self.sim_decimation):
             torque = (pd_target - self.dof_pos) * self.stiffness - self.dof_vel * self.damping
@@ -138,9 +185,23 @@ class MujocoEnv(Environment):
             mujoco.mj_step(self.model, self.data)  # pyright: ignore[reportAttributeAccessIssue]
             self.update(simple=True)
         self.update(simple=False)
+        self.perception_manager.render_debug(viewer=self.viewer)
+        if not self._handle_viewer_state():
+            return
+        self.viewer.cam.lookat = self.data.qpos.astype(np.float32)[:3]
+        self.viewer.render()
+        self._handle_viewer_state()
 
     def shutdown(self):
-        self.viewer.close()
+        if self.should_exit:
+            return
+        self.request_shutdown()
+        perception_manager = getattr(self, "perception_manager", None)
+        if perception_manager is not None:
+            perception_manager.close()
+        viewer = getattr(self, "viewer", None)
+        if viewer is not None:
+            viewer.close()
 
 
 if __name__ == "__main__":

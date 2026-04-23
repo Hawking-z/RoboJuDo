@@ -1,6 +1,6 @@
 <mujoco model="g1_12dof">
   <compiler angle="radian" meshdir="meshes/"/>
-
+  <include file="../terrain/complex_terrain.xml"/>
   <!-- <option timestep='0.001' iterations='50' solver='PGS' gravity='0 0 -9.81'></option> -->
   <statistic meansize="0.144785" extent="1.23314" center="0.025392 2.0634e-05 -0.245975"/>
   <default>

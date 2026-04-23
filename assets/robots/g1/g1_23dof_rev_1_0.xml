@@ -1,6 +1,6 @@
 <mujoco model="g1_23dof_rev_1_0">
   <compiler angle="radian" meshdir="meshes"/>
-
+  <include file="../terrain/complex_terrain.xml"/>
   <!-- <option timestep='0.001' iterations='50' solver='PGS' gravity='0 0 -9.81'></option> -->
   <default>
     <joint damping="0.001" armature="0.01" frictionloss="0.1"/>

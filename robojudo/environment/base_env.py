@@ -40,6 +40,8 @@ class Environment(ABC):
         self._torso_quat: np.ndarray | None = None
         self._torso_ang_vel: np.ndarray | None = None
         self._fk_info: dict | None = None
+        self._extra_env_data: dict[str, object] = {}
+        self._shutdown_requested = False
 
         # born place alignment
         self.born_place_align = self.cfg_env.born_place_align
@@ -173,4 +175,15 @@ class Environment(ABC):
             "torso_ang_vel": self.torso_ang_vel,
             "fk_info": self.fk_info,
         }
+        env_data.update(self._extra_env_data)
         return Box(env_data)
+
+    def set_extra_env_data(self, data: dict[str, object] | None):
+        self._extra_env_data = {} if data is None else dict(data)
+
+    def request_shutdown(self):
+        self._shutdown_requested = True
+
+    @property
+    def should_exit(self) -> bool:
+        return self._shutdown_requested

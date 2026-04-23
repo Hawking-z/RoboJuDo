@@ -50,6 +50,9 @@ def main():
     while True:
         time_start = time.time()
         pipeline.step()
+        if pipeline.env.should_exit:
+            logger.info("Environment requested shutdown. Exiting main loop.")
+            break
         time_end = time.time()
         time_diff = time_end - time_start
 
