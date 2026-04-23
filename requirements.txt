@@ -14,3 +14,5 @@ mujoco
 msgpack
 msgpack-numpy
 colorlog
+pyrealsense2
+opencv-python

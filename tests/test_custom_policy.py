@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,6 +12,64 @@ from robojudo.policy.utils.robot_config import RobotConfig
 
 
 class TestCustomPolicy(unittest.TestCase):
+    def test_robot_config_supports_regex_dof_rules_with_last_match_wins(self):
+        source = Path("assets/models/g1/custom/exported_1/robot_config.yaml")
+        robot_cfg = yaml.safe_load(source.read_text())
+        robot_cfg["dof_config"] = {
+            "isaac_order": robot_cfg["dof_config"]["isaac_order"],
+            ".*": {
+                "kp": 1.0,
+                "kd": 2.0,
+                "action_scale": 3.0,
+                "torque_limits": 4.0,
+                "default_pos": 5.0,
+            },
+            ".*_hip_pitch_joint": {
+                "kp": 10.0,
+                "kd": 20.0,
+                "action_scale": 30.0,
+                "torque_limits": 40.0,
+                "default_pos": 50.0,
+            },
+            "left_hip_pitch_joint": {
+                "kp": 100.0,
+                "kd": 200.0,
+                "action_scale": 300.0,
+                "torque_limits": 400.0,
+                "default_pos": 500.0,
+            },
+        }
+
+        with NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp:
+            yaml.safe_dump(robot_cfg, tmp, sort_keys=False)
+            tmp_path = Path(tmp.name)
+
+        try:
+            cfg = RobotConfig.from_yaml_file(tmp_path.as_posix())
+            left_idx = cfg.dof.name_to_index["left_hip_pitch_joint"]
+            right_idx = cfg.dof.name_to_index["right_hip_pitch_joint"]
+            waist_idx = cfg.dof.name_to_index["waist_yaw_joint"]
+
+            self.assertEqual(cfg.dof.kp[left_idx], 100.0)
+            self.assertEqual(cfg.dof.kd[left_idx], 200.0)
+            self.assertEqual(cfg.dof.scale[left_idx], 300.0)
+            self.assertEqual(cfg.dof.torque_limits[left_idx], 400.0)
+            self.assertEqual(cfg.dof.default_pos[left_idx], 500.0)
+
+            self.assertEqual(cfg.dof.kp[right_idx], 10.0)
+            self.assertEqual(cfg.dof.kd[right_idx], 20.0)
+            self.assertEqual(cfg.dof.scale[right_idx], 30.0)
+            self.assertEqual(cfg.dof.torque_limits[right_idx], 40.0)
+            self.assertEqual(cfg.dof.default_pos[right_idx], 50.0)
+
+            self.assertEqual(cfg.dof.kp[waist_idx], 1.0)
+            self.assertEqual(cfg.dof.kd[waist_idx], 2.0)
+            self.assertEqual(cfg.dof.scale[waist_idx], 3.0)
+            self.assertEqual(cfg.dof.torque_limits[waist_idx], 4.0)
+            self.assertEqual(cfg.dof.default_pos[waist_idx], 5.0)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     def test_custom_policy_cfg_paths_are_empty_by_default(self):
         cfg = CustomPolicyCfg()
 

@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import yaml
 from typing import Any, Dict, List, Tuple
@@ -34,6 +36,15 @@ def as_vec_s(node: Any) -> List[str]:
 def node_has(node: Dict[str, Any], key: str) -> bool:
     """判断字典是否有这个 key 且非 None，对应 C++ 的 node_has"""
     return isinstance(node, dict) and (key in node) and (node[key] is not None)
+
+
+DOF_PARAM_FIELDS = {
+    "kp": "kp",
+    "kd": "kd",
+    "action_scale": "scale",
+    "torque_limits": "torque_limits",
+    "default_pos": "default_pos",
+}
 
 
 class DofConfig:
@@ -166,19 +177,60 @@ class RobotConfig:
         cfg.dof.scale = init_vec()
         cfg.dof.torque_limits = init_vec()
         cfg.dof.default_pos = init_vec()
+        assigned = {
+            field: np.zeros(DOF, dtype=bool)
+            for field in DOF_PARAM_FIELDS
+        }
 
-        for i, jn in enumerate(cfg.dof.isaac_order):
-            if not node_has(dcfg, jn):
-                raise RuntimeError(f"dof_config 缺少关节参数: {jn}")
-            jn_node = dcfg[jn]
+        for rule_name, rule_node in dcfg.items():
+            if rule_name == "isaac_order":
+                continue
+            if not isinstance(rule_node, dict):
+                raise RuntimeError(f"dof_config 规则必须是 map: {rule_name}")
+
+            if rule_name in cfg.dof.name_to_index:
+                matched_indices = [cfg.dof.name_to_index[rule_name]]
+            else:
+                try:
+                    pattern = re.compile(rule_name)
+                except re.error as e:
+                    raise RuntimeError(f"dof_config 正则表达式非法: {rule_name}, 错误: {e}") from e
+                matched_indices = [
+                    i for i, joint_name in enumerate(cfg.dof.isaac_order)
+                    if pattern.search(joint_name)
+                ]
+
+            if not matched_indices:
+                raise RuntimeError(f"dof_config 规则未匹配任何关节: {rule_name}")
+
+            unknown_fields = [field for field in rule_node if field not in DOF_PARAM_FIELDS]
+            if unknown_fields:
+                raise RuntimeError(
+                    f"dof_config 规则 {rule_name} 包含未知字段: {', '.join(unknown_fields)}"
+                )
+
             try:
-                cfg.dof.kp[i] = float(jn_node["kp"])
-                cfg.dof.kd[i] = float(jn_node["kd"])
-                cfg.dof.scale[i] = float(jn_node["action_scale"])
-                cfg.dof.torque_limits[i] = float(jn_node["torque_limits"])
-                cfg.dof.default_pos[i] = float(jn_node["default_pos"])
+                for field_name, attr_name in DOF_PARAM_FIELDS.items():
+                    if field_name not in rule_node:
+                        continue
+                    value = float(rule_node[field_name])
+                    target = getattr(cfg.dof, attr_name)
+                    for idx in matched_indices:
+                        target[idx] = value
+                        assigned[field_name][idx] = True
             except Exception as e:
-                raise RuntimeError(f"解析关节参数失败: {jn}, 错误: {e}")
+                raise RuntimeError(f"解析关节参数失败: {rule_name}, 错误: {e}") from e
+
+        for field_name in DOF_PARAM_FIELDS:
+            missing = [
+                cfg.dof.isaac_order[i]
+                for i, is_set in enumerate(assigned[field_name])
+                if not is_set
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"dof_config 未为以下关节设置 {field_name}: {', '.join(missing)}"
+                )
 
         # ---------- obs_config ----------
         if not node_has(root, "obs_config"):
