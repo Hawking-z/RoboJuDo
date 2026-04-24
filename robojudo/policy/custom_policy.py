@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -21,31 +22,71 @@ class CustomPolicy(Policy):
     def __init__(self, cfg_policy: CustomPolicyCfg, device):
         if not cfg_policy.robot_config_file:
             raise FileNotFoundError("CustomPolicyCfg.robot_config_file must be set.")
-        if not cfg_policy.disable_autoload and not cfg_policy.policy_file:
+        if not cfg_policy.policy_file:
             raise FileNotFoundError("CustomPolicyCfg.model_file or model_dir must be set.")
-        if not cfg_policy.disable_autoload and not Path(cfg_policy.policy_file).is_file():
+        if not Path(cfg_policy.policy_file).is_file():
             raise FileNotFoundError(f"Model file not found at {cfg_policy.policy_file}")
 
         self.robot_cfg = RobotConfig.from_yaml_file(cfg_policy.robot_config_file)
         self.model_backend = cfg_policy.model_backend
-        self.obs_heads = cfg_policy.obs_heads
-        if not self.obs_heads:
-            self.obs_heads = list(self.robot_cfg.obs_map.keys())
-        if not self.obs_heads:
+        all_obs_heads = list(self.robot_cfg.obs_map.keys())
+        if not all_obs_heads:
             raise ValueError("robot_config obs_config must define at least one obs head.")
+        self.deploy_obs_heads = list(cfg_policy.deploy_obs_heads or self.robot_cfg.deploy_obs_heads)
+        if not self.deploy_obs_heads:
+            raise ValueError("CustomPolicyCfg.deploy_obs_heads must define at least one deploy obs head.")
+        missing_deploy_obs = [name for name in self.deploy_obs_heads if name not in self.robot_cfg.obs_map]
+        if missing_deploy_obs:
+            raise ValueError(
+                f"CustomPolicyCfg.deploy_obs_heads contains unknown obs heads: {', '.join(missing_deploy_obs)}"
+            )
 
-        self.obs_head = self.obs_heads[0]
-        self.onnx_input_name = cfg_policy.onnx_input_name or self.obs_head
-        self.onnx_output_name = cfg_policy.onnx_output_name
-
-        if self.model_backend == "onnx" and not cfg_policy.disable_autoload:
+        if self.model_backend == "onnx":
             import onnxruntime as ort
 
             logger.debug(f"Loading ONNX policy '{cfg_policy.policy_name}' from {cfg_policy.policy_file}")
-            self.session = ort.InferenceSession(cfg_policy.policy_file)
-            self.input_names = [i.name for i in self.session.get_inputs()]
-            self.output_names = [o.name for o in self.session.get_outputs()]
-            cfg_policy = cfg_policy.model_copy(update={"disable_autoload": True})
+            self.ort_session = ort.InferenceSession(cfg_policy.policy_file)
+            self.ort_input_names = [i.name for i in self.ort_session.get_inputs()]
+            self.ort_output_names = [o.name for o in self.ort_session.get_outputs()]
+            if not self.ort_input_names:
+                raise RuntimeError(f"ONNX model has no inputs: {cfg_policy.policy_file}")
+            if not self.ort_output_names:
+                raise RuntimeError(f"ONNX model has no outputs: {cfg_policy.policy_file}")
+            missing_onnx_inputs = [name for name in self.ort_input_names if name not in self.deploy_obs_heads]
+            if missing_onnx_inputs:
+                raise RuntimeError(
+                    "ONNX model inputs are not covered by deploy_obs_heads: "
+                    + ", ".join(missing_onnx_inputs)
+                )
+        elif self.model_backend == "torchscript":
+            logger.debug(f"Loading TorchScript policy '{cfg_policy.policy_name}' from {cfg_policy.policy_file}")
+            self.model = torch.jit.load(cfg_policy.policy_file, map_location=device)
+            schema = self.model._c._get_method("forward").schema
+            self.torch_input_names = [arg.name for arg in schema.arguments if arg.name != "self"]
+            if not self.torch_input_names:
+                raise RuntimeError(f"TorchScript model has no forward inputs: {cfg_policy.policy_file}")
+            if len(self.torch_input_names) == 1:
+                if len(self.deploy_obs_heads) != 1:
+                    raise RuntimeError(
+                        "TorchScript model expects exactly 1 deploy obs head, got "
+                        f"{len(self.deploy_obs_heads)}: {self.deploy_obs_heads}"
+                    )
+                self.torch_single_input_head = self.deploy_obs_heads[0]
+            else:
+                missing_torch_inputs = [name for name in self.torch_input_names if name not in self.deploy_obs_heads]
+                if missing_torch_inputs:
+                    raise RuntimeError(
+                        "TorchScript forward inputs are not covered by deploy_obs_heads: "
+                        + ", ".join(missing_torch_inputs)
+                    )
+                extra_torch_inputs = [name for name in self.deploy_obs_heads if name not in self.torch_input_names]
+                if extra_torch_inputs:
+                    raise RuntimeError(
+                        "deploy_obs_heads contains unused TorchScript inputs: "
+                        + ", ".join(extra_torch_inputs)
+                    )
+        else:
+            raise ValueError(f"Unsupported CustomPolicy model_backend: {self.model_backend}")
 
         super().__init__(cfg_policy=cfg_policy, device=device)
 
@@ -175,14 +216,17 @@ class CustomPolicy(Policy):
     def get_observation(self, env_data, ctrl_data):
         inputs, commands, clock_phase = self._sensor_inputs(env_data, ctrl_data)
         obs_outputs = self.obs_assembler.step(inputs)
-        obs = obs_outputs[self.obs_head].reshape(-1).astype(np.float32, copy=False)
+        obs = {}
+        for name in self.deploy_obs_heads:
+            if name not in obs_outputs:
+                raise KeyError(f"ObsAssembler output missing deploy obs head '{name}'")
+            obs[name] = np.asarray(obs_outputs[name], dtype=np.float32)
 
         extras = {
             "commands": commands,
             "command_stand": self.command_stand.copy(),
             "clock_phase": clock_phase,
-            "obs_head": self.obs_head,
-            "obs_heads": self.obs_heads,
+            "deploy_obs_heads": self.deploy_obs_heads,
             "obs_outputs": obs_outputs,
         }
         return obs, extras
@@ -195,21 +239,49 @@ class CustomPolicy(Policy):
         self.last_action = actions.copy()
         return actions * self.action_scale
 
-    def get_action(self, obs: np.ndarray) -> np.ndarray:
-        if self.model_backend == "onnx":
-            if not hasattr(self, "session"):
-                raise RuntimeError("ONNX session is not loaded. Set disable_autoload=False to run inference.")
+    def _batch_numpy(self, obs: np.ndarray) -> np.ndarray:
+        return np.expand_dims(np.asarray(obs, dtype=np.float32), axis=0)
 
+    def _batch_tensor(self, obs: np.ndarray) -> torch.Tensor:
+        return torch.from_numpy(self._batch_numpy(obs)).float().to(self.device)
+
+    def _unwrap_torch_output(self, output: Any) -> torch.Tensor:
+        if isinstance(output, (tuple, list)):
+            if not output:
+                raise RuntimeError("TorchScript model returned no outputs.")
+            output = output[0]
+        if not torch.is_tensor(output):
+            raise RuntimeError(f"TorchScript model must return a Tensor or tuple/list with Tensor, got {type(output)}")
+        return output
+
+    def get_action(self, obs: dict[str, np.ndarray]) -> np.ndarray:
+        if not isinstance(obs, dict):
+            raise TypeError("CustomPolicy expects observation dict keyed by deploy_obs_heads.")
+
+        missing_obs = [name for name in self.deploy_obs_heads if name not in obs]
+        if missing_obs:
+            raise KeyError(f"Missing deploy observations for inference: {', '.join(missing_obs)}")
+
+        if self.model_backend == "onnx":
             ort_inputs = {
-                self.onnx_input_name: np.expand_dims(obs, axis=0).astype(np.float32),
+                name: self._batch_numpy(obs[name])
+                for name in self.deploy_obs_heads
+                if name in self.ort_input_names
             }
-            output_names = None if self.onnx_output_name is None else [self.onnx_output_name]
-            outputs = self.session.run(output_names, ort_inputs)
+            missing_ort_inputs = [name for name in self.ort_input_names if name not in ort_inputs]
+            if missing_ort_inputs:
+                raise KeyError(f"Missing ONNX inputs for inference: {', '.join(missing_ort_inputs)}")
+            outputs = self.ort_session.run(self.ort_output_names, ort_inputs)
             return self._process_actions(np.asarray(outputs[0]).squeeze())
 
-        obs_tensor = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
         with torch.no_grad():
-            actions_tensor = self.model(obs_tensor).cpu()
+            if len(self.torch_input_names) == 1:
+                actions_tensor = self.model(self._batch_tensor(obs[self.torch_single_input_head]))
+            else:
+                actions_tensor = self.model(
+                    **{name: self._batch_tensor(obs[name]) for name in self.torch_input_names}
+                )
+            actions_tensor = self._unwrap_torch_output(actions_tensor).cpu()
         return self._process_actions(actions_tensor.numpy().squeeze())
 
     def debug_viz(self, visualizer: MujocoVisualizer, env_data, ctrl_data, extras):

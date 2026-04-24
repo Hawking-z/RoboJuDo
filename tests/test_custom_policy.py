@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import yaml
@@ -25,6 +26,38 @@ def _minimal_dof_cfg():
         torque_limits=[10.0],
         position_limits=[[-1.0, 1.0]],
     )
+
+
+class _FakeTorchscriptModule:
+    class _CompiledModule:
+        @staticmethod
+        def _get_method(name):
+            schema = SimpleNamespace(
+                arguments=[SimpleNamespace(name="self"), SimpleNamespace(name="x")]
+            )
+            return SimpleNamespace(schema=schema)
+
+    _c = _CompiledModule()
+
+
+class _FakeOrtIO:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _FakeOrtSession:
+    def __init__(self, input_names: list[str], output_names: list[str]):
+        self._inputs = [_FakeOrtIO(name) for name in input_names]
+        self._outputs = [_FakeOrtIO(name) for name in output_names]
+
+    def get_inputs(self):
+        return self._inputs
+
+    def get_outputs(self):
+        return self._outputs
+
+    def run(self, output_names, input_dict):
+        return [np.zeros((1, 1), dtype=np.float32) for _ in output_names]
 
 
 def _external_sensor_robot_config(sensor_name: str, sensor_shape: list[int]) -> Path:
@@ -154,19 +187,46 @@ class TestCustomPolicy(unittest.TestCase):
     def test_custom_policy_cfg_paths_are_empty_by_default(self):
         cfg = CustomPolicyCfg()
 
+        self.assertTrue(cfg.disable_autoload)
         self.assertEqual(cfg.robot_config_file, "")
         self.assertEqual(cfg.model_dir, "")
         self.assertEqual(cfg.model_file, "")
         self.assertEqual(cfg.policy_file, "")
 
+    def test_custom_policy_cfg_rejects_disable_autoload_false(self):
+        with self.assertRaisesRegex(ValueError, "disable_autoload"):
+            CustomPolicyCfg(
+                disable_autoload=False,
+                robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
+            )
+
+    def test_custom_policy_loads_torchscript_model_even_when_base_autoload_is_disabled(self):
+        with NamedTemporaryFile(suffix=".pt") as tmp:
+            cfg = CustomPolicyCfg(
+                model_backend="torchscript",
+                model_file=tmp.name,
+                robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
+                disable_autoload=True,
+            )
+
+            with mock.patch(
+                "robojudo.policy.custom_policy.torch.jit.load",
+                return_value=_FakeTorchscriptModule(),
+            ) as jit_load:
+                policy = CustomPolicy(cfg_policy=cfg, device="cpu")
+
+        jit_load.assert_called_once_with(tmp.name, map_location="cpu")
+        self.assertTrue(policy.cfg_policy.disable_autoload)
+        self.assertTrue(hasattr(policy, "model"))
+
     def test_custom_policy_cfg_uses_explicit_robot_config(self):
         cfg = CustomPolicyCfg(
             model_backend="onnx",
-            model_dir="exported_1",
+            model_dir="assets/models/g1/custom/exported_1",
             policy_name="policy_0",
-            robot_config_file="exported_1/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported_1/robot_config.yaml",
         )
-        robot_cfg = RobotConfig.from_yaml_file("exported_1/robot_config.yaml")
+        robot_cfg = RobotConfig.from_yaml_file("assets/models/g1/custom/exported_1/robot_config.yaml")
 
         self.assertEqual(cfg.policy_type, "CustomPolicy")
         self.assertTrue(cfg.policy_file.endswith("exported_1/policy_0.onnx"))
@@ -174,7 +234,7 @@ class TestCustomPolicy(unittest.TestCase):
         self.assertEqual(cfg.freq, 50)
         self.assertEqual(cfg.action_clip, 10.0)
         self.assertEqual(cfg.action_beta, 1.0)
-        self.assertEqual(cfg.obs_heads, list(robot_cfg.obs_map.keys()))
+        self.assertEqual(cfg.deploy_obs_heads, robot_cfg.deploy_obs_heads)
         self.assertEqual(cfg.obs_dof.joint_names, robot_cfg.dof.isaac_order)
         self.assertEqual(cfg.obs_dof.default_pos, robot_cfg.dof.default_pos.tolist())
         self.assertEqual(cfg.obs_dof.stiffness, robot_cfg.dof.kp.tolist())
@@ -184,27 +244,27 @@ class TestCustomPolicy(unittest.TestCase):
     def test_custom_policy_cfg_selects_torchscript_and_onnx_model_files(self):
         torch_cfg = CustomPolicyCfg(
             model_backend="torchscript",
-            model_dir="exported",
+            model_dir="assets/models/g1/custom/exported",
             policy_name="policy_0",
-            robot_config_file="exported/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
         )
         onnx_cfg = CustomPolicyCfg(
             model_backend="onnx",
-            model_dir="exported",
+            model_dir="assets/models/g1/custom/exported",
             policy_name="policy_0",
-            robot_config_file="exported/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
         )
         explicit_cfg = CustomPolicyCfg(
             model_backend="onnx",
             model_file="/tmp/custom_policy.onnx",
-            robot_config_file="exported/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
         )
         pt_cfg = CustomPolicyCfg(
             model_backend="torchscript",
-            model_dir="exported",
+            model_dir="assets/models/g1/custom/exported",
             policy_name="policy_0",
             model_suffix=".pt",
-            robot_config_file="exported/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
         )
 
         self.assertTrue(torch_cfg.policy_file.endswith("exported/policy_0.jit"))
@@ -218,16 +278,27 @@ class TestCustomPolicy(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             CustomPolicy(cfg_policy=cfg, device="cpu")
 
+    def test_custom_policy_requires_model_file_even_when_disable_autoload_is_true(self):
+        cfg = CustomPolicyCfg(
+            model_backend="torchscript",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
+            disable_autoload=True,
+        )
+
+        with self.assertRaises(FileNotFoundError):
+            CustomPolicy(cfg_policy=cfg, device="cpu")
+
     def test_custom_policy_builds_actor_obs_from_robot_config_schema(self):
         cfg = CustomPolicyCfg(
             model_backend="onnx",
-            model_dir="exported_1",
+            model_dir="assets/models/g1/custom/exported_1",
             policy_name="policy_0",
-            robot_config_file="exported_1/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported_1/robot_config.yaml",
             disable_autoload=True,
         )
         policy = CustomPolicy(cfg_policy=cfg, device="cpu")
-        obs_shape = policy.obs_assembler.head_output_spec()[cfg.obs_heads[0]]["output_shape"]
+        deploy_head = cfg.deploy_obs_heads[0]
+        obs_shape = policy.obs_assembler.head_output_spec()[deploy_head]["output_shape"]
 
         env_data = SimpleNamespace(
             base_quat=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
@@ -237,22 +308,44 @@ class TestCustomPolicy(unittest.TestCase):
         )
         obs, extras = policy.get_observation(env_data, {})
 
-        self.assertEqual(obs.dtype, np.float32)
-        self.assertEqual(obs.shape, obs_shape)
-        self.assertEqual(extras["obs_head"], cfg.obs_heads[0])
-        self.assertEqual(extras["obs_heads"], cfg.obs_heads)
-        self.assertIn(cfg.obs_heads[0], extras["obs_outputs"])
+        self.assertEqual(set(obs.keys()), set(cfg.deploy_obs_heads))
+        self.assertEqual(obs[deploy_head].dtype, np.float32)
+        self.assertEqual(obs[deploy_head].shape, obs_shape)
+        self.assertEqual(extras["deploy_obs_heads"], cfg.deploy_obs_heads)
+        self.assertIn(deploy_head, extras["obs_outputs"])
         np.testing.assert_allclose(extras["commands"], np.zeros(3, dtype=np.float32))
         self.assertEqual(extras["clock_phase"].shape, (4,))
         np.testing.assert_allclose(extras["command_stand"], np.array([1.0], dtype=np.float32))
         np.testing.assert_allclose(extras["clock_phase"], np.zeros(4, dtype=np.float32))
 
+    def test_custom_policy_onnx_get_action_accepts_deploy_obs_dict(self):
+        cfg = CustomPolicyCfg(
+            model_backend="onnx",
+            model_dir="assets/models/g1/custom/exported_1",
+            policy_name="policy_0",
+            robot_config_file="assets/models/g1/custom/exported_1/robot_config.yaml",
+            disable_autoload=True,
+        )
+        policy = CustomPolicy(cfg_policy=cfg, device="cpu")
+        env_data = SimpleNamespace(
+            base_quat=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            base_ang_vel=np.zeros(3, dtype=np.float32),
+            dof_pos=np.asarray(cfg.obs_dof.default_pos, dtype=np.float32),
+            dof_vel=np.zeros(cfg.obs_dof.num_dofs, dtype=np.float32),
+        )
+
+        obs, _ = policy.get_observation(env_data, {})
+        action = policy.get_action(obs)
+
+        self.assertEqual(set(obs.keys()), set(cfg.deploy_obs_heads))
+        self.assertEqual(action.shape, (cfg.action_dof.num_dofs,))
+
     def test_custom_policy_walk_command_ungates_clock_phase(self):
         cfg = CustomPolicyCfg(
             model_backend="onnx",
-            model_dir="exported_1",
+            model_dir="assets/models/g1/custom/exported_1",
             policy_name="policy_0",
-            robot_config_file="exported_1/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported_1/robot_config.yaml",
             disable_autoload=True,
         )
         policy = CustomPolicy(cfg_policy=cfg, device="cpu")
@@ -278,9 +371,9 @@ class TestCustomPolicy(unittest.TestCase):
     def test_custom_policy_action_processing_matches_export_action_transform(self):
         cfg = CustomPolicyCfg(
             model_backend="onnx",
-            model_dir="exported_1",
+            model_dir="assets/models/g1/custom/exported_1",
             policy_name="policy_0",
-            robot_config_file="exported_1/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported_1/robot_config.yaml",
             disable_autoload=True,
         )
         policy = CustomPolicy(cfg_policy=cfg, device="cpu")
@@ -293,7 +386,7 @@ class TestCustomPolicy(unittest.TestCase):
         np.testing.assert_allclose(policy.last_action, np.clip(raw_actions, -cfg.action_clip, cfg.action_clip))
 
     def test_custom_policy_rejects_unsupported_exp_avg_decay(self):
-        source = Path("exported_1/robot_config.yaml")
+        source = Path("assets/models/g1/custom/exported_1/robot_config.yaml")
         bad_cfg_path = Path("/tmp/custom_policy_exp_avg_decay.yaml")
         robot_cfg = yaml.safe_load(source.read_text())
         robot_cfg["exp_avg_decay"] = 0.05
@@ -307,19 +400,37 @@ class TestCustomPolicy(unittest.TestCase):
 
         cfg = G1CustomPolicy2Cfg(disable_autoload=True)
         policy = CustomPolicy(cfg_policy=cfg, device="cpu")
-        obs_shape = policy.obs_assembler.head_output_spec()[cfg.obs_heads[0]]["output_shape"]
+        obs_shape = policy.obs_assembler.head_output_spec()[cfg.deploy_obs_heads[0]]["output_shape"]
 
-        self.assertEqual(cfg.policy_file, "/home/zyc/RoboJuDo/exported/policy_wo_gait.pt")
+        self.assertEqual(cfg.policy_file, "assets/models/g1/custom/exported/policy_wo_gait.pt")
         self.assertEqual(cfg.action_dof.num_dofs, 29)
         self.assertEqual(obs_shape, (480,))
+
+    def test_custom_policy_torchscript_get_action_accepts_deploy_obs_dict(self):
+        from robojudo.config.g1.policy.g1_custom_policy_cfg import G1CustomPolicy2Cfg
+
+        cfg = G1CustomPolicy2Cfg(disable_autoload=True)
+        policy = CustomPolicy(cfg_policy=cfg, device="cpu")
+        env_data = SimpleNamespace(
+            base_quat=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            base_ang_vel=np.zeros(3, dtype=np.float32),
+            dof_pos=np.asarray(cfg.obs_dof.default_pos, dtype=np.float32),
+            dof_vel=np.zeros(cfg.obs_dof.num_dofs, dtype=np.float32),
+        )
+
+        obs, _ = policy.get_observation(env_data, {})
+        action = policy.get_action(obs)
+
+        self.assertEqual(set(obs.keys()), set(cfg.deploy_obs_heads))
+        self.assertEqual(action.shape, (cfg.action_dof.num_dofs,))
 
     def test_custom_policy_wo_gait_commands_are_not_stand_gated(self):
         cfg = CustomPolicyCfg(
             model_backend="torchscript",
-            model_dir="exported",
+            model_dir="assets/models/g1/custom/exported",
             policy_name="policy_wo_gait",
             model_suffix=".pt",
-            robot_config_file="exported/robot_config.yaml",
+            robot_config_file="assets/models/g1/custom/exported/robot_config.yaml",
             disable_autoload=True,
         )
         policy = CustomPolicy(cfg_policy=cfg, device="cpu")
@@ -346,20 +457,25 @@ class TestCustomPolicy(unittest.TestCase):
         try:
             cfg = CustomPolicyCfg(
                 model_backend="onnx",
-                model_dir="exported_1",
+                model_dir="assets/models/g1/custom/exported_1",
                 policy_name="policy_0",
                 robot_config_file=robot_config_path.as_posix(),
                 disable_autoload=True,
             )
-            cfg.obs_heads = ["external_obs"]
-            policy = CustomPolicy(cfg_policy=cfg, device="cpu")
+            cfg.deploy_obs_heads = ["external_obs"]
+            with mock.patch(
+                "onnxruntime.InferenceSession",
+                return_value=_FakeOrtSession(["external_obs"], ["actions"]),
+            ):
+                policy = CustomPolicy(cfg_policy=cfg, device="cpu")
 
             env_data = {
                 "camera_front_depth": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
             }
             obs, extras = policy.get_observation(env_data, {})
 
-            np.testing.assert_allclose(obs, np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32))
+            np.testing.assert_allclose(obs["external_obs"], np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+            self.assertEqual(extras["deploy_obs_heads"], ["external_obs"])
             self.assertIn("external_obs", extras["obs_outputs"])
         finally:
             robot_config_path.unlink(missing_ok=True)

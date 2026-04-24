@@ -121,6 +121,7 @@ class CustomPolicyCfg(PolicyCfg):
     policy_type: str = "CustomPolicy"
     robot: str = "g1"
     policy_name: str = "policy_0"
+    disable_autoload: bool = True
 
     model_backend: str = "torchscript"
     model_dir: str = ""
@@ -128,10 +129,7 @@ class CustomPolicyCfg(PolicyCfg):
     model_suffix: str = ""
     robot_config_file: str = ""
 
-    obs_heads: list[str] = []
-    onnx_input_name: str | None = None
-    onnx_output_name: str | None = None
-
+    deploy_obs_heads: list[str] = []
     action_scale: list[float] = []
     action_clip: float | None = None
     action_beta: float = 1.0
@@ -169,6 +167,12 @@ class CustomPolicyCfg(PolicyCfg):
             return "onnx"
         raise ValueError("model_backend must be one of: torchscript, jit, pt, onnx")
 
+    @field_validator("disable_autoload")
+    def require_base_autoload_disabled(cls, v):
+        if not v:
+            raise ValueError("CustomPolicy always manages model loading itself; disable_autoload must stay True.")
+        return v
+
     @model_validator(mode="after")
     def load_robot_config(self):
         if not self.robot_config_file:
@@ -198,7 +202,7 @@ class CustomPolicyCfg(PolicyCfg):
             self.freq = int(round(robot_cfg.infer_rate))
         self.action_scale = robot_cfg.dof.scale.tolist()
         self.action_clip = robot_cfg.clip_actions if robot_cfg.clip_actions > 0 else None
-        self.obs_heads = list(robot_cfg.obs_map.keys())
+        self.deploy_obs_heads = list(robot_cfg.deploy_obs_heads)
         return self
 
 

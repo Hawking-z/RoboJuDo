@@ -120,18 +120,103 @@ class MujocoCameraProvider(PerceptionProvider):
         return outputs
 
     def render_debug(self, viewer=None) -> None:
-        if not self.debug_cfg.show_camera_windows or not self.last_outputs:
+        if viewer is not None and self.debug_cfg.draw_camera_frustum:
+            self._draw_camera_frustum_simple(viewer)
+        if self.debug_cfg.show_camera_windows and self.last_outputs:
+            for runtime in self.cameras.values():
+                color_key = runtime.cfg.color_output_key(runtime.name)
+                depth_key = runtime.cfg.depth_output_key(runtime.name)
+                if color_key in self.last_outputs:
+                    cv2.imshow(color_key, cv2.cvtColor(self.last_outputs[color_key], cv2.COLOR_RGB2BGR))
+                if depth_key in self.last_outputs:
+                    cv2.imshow(depth_key, self._depth_to_display(self.last_outputs[depth_key], runtime.cfg.near, runtime.cfg.far))
+            cv2.waitKey(1)
+
+    def _draw_camera_frustum_simple(self, viewer) -> None:
+        if self.model is None or self.data is None:
             return
 
-        for runtime in self.cameras.values():
-            color_key = runtime.cfg.color_output_key(runtime.name)
-            depth_key = runtime.cfg.depth_output_key(runtime.name)
-            if color_key in self.last_outputs:
-                cv2.imshow(color_key, cv2.cvtColor(self.last_outputs[color_key], cv2.COLOR_RGB2BGR))
-            if depth_key in self.last_outputs:
-                cv2.imshow(depth_key, self._depth_to_display(self.last_outputs[depth_key], runtime.cfg.near, runtime.cfg.far))
-        cv2.waitKey(1)
+        for cam_idx, runtime in enumerate(self.cameras.values()):
+            cam_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera_model_name(runtime.name)
+            )
+            if cam_id < 0:
+                continue
 
+            rgba = np.array([0.2, 0.8, 0.2, 0.9], dtype=float)
+            base_id = 9000 + cam_idx * 20
+
+            pos = np.asarray(self.data.cam_xpos[cam_id], dtype=float)
+            rot = np.asarray(self.data.cam_xmat[cam_id], dtype=float).reshape(3, 3)
+
+            right = rot[:, 0]
+            up = rot[:, 1]
+            forward = -rot[:, 2]
+
+            far = float(runtime.cfg.far)
+            w, h = runtime.cfg.resolution
+            aspect = float(w) / float(h)
+            hfov = math.radians(float(runtime.cfg.hfov))
+            vfov = 2.0 * math.atan(math.tan(hfov / 2.0) / aspect)
+
+            far_h = math.tan(vfov / 2.0) * far
+            far_w = math.tan(hfov / 2.0) * far
+            fc = pos + forward * far
+
+            ftl = fc + up * far_h - right * far_w
+            ftr = fc + up * far_h + right * far_w
+            fbl = fc - up * far_h - right * far_w
+            fbr = fc - up * far_h + right * far_w
+
+            viewer.add_marker(
+                pos=pos,
+                size=np.array([0.01, 0.01, 0.01]),
+                rgba=rgba,
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                label="",
+                id=base_id + 0,
+            )
+
+            self._add_capsule(viewer, pos, pos + forward * min(0.3, far), rgba, 0.003, base_id + 1)
+
+            self._add_capsule(viewer, pos, ftl, rgba, 0.0015, base_id + 2)
+            self._add_capsule(viewer, pos, ftr, rgba, 0.0015, base_id + 3)
+            self._add_capsule(viewer, pos, fbl, rgba, 0.0015, base_id + 4)
+            self._add_capsule(viewer, pos, fbr, rgba, 0.0015, base_id + 5)
+
+            self._add_capsule(viewer, ftl, ftr, rgba, 0.0015, base_id + 6)
+            self._add_capsule(viewer, ftr, fbr, rgba, 0.0015, base_id + 7)
+            self._add_capsule(viewer, fbr, fbl, rgba, 0.0015, base_id + 8)
+            self._add_capsule(viewer, fbl, ftl, rgba, 0.0015, base_id + 9)
+
+
+    def _add_capsule(self, viewer, p0, p1, rgba, radius, marker_id):
+        p0 = np.asarray(p0, dtype=float)
+        p1 = np.asarray(p1, dtype=float)
+        d = p1 - p0
+        L = np.linalg.norm(d)
+        if L < 1e-8:
+            return
+
+        z = d / L
+        ref = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(z, ref)) > 0.99:
+            ref = np.array([0.0, 1.0, 0.0])
+
+        x = np.cross(ref, z)
+        x /= np.linalg.norm(x)
+        y = np.cross(z, x)
+        mat = np.column_stack([x, y, z]).reshape(9)
+
+        viewer.add_marker(
+            pos=0.5 * (p0 + p1),
+            mat=mat,
+            size=np.array([radius, radius, 0.5 * L]),
+            rgba=rgba,
+            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+            label="",
+            id=marker_id,
+        )
     def close(self) -> None:
         for runtime in self.cameras.values():
             if runtime.renderer is not None:

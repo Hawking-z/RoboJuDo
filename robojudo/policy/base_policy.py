@@ -1,6 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import deque
+from typing import TypeAlias
 
 import numpy as np
 import torch
@@ -10,6 +11,8 @@ from robojudo.tools.tool_cfgs import DoFConfig
 from .policy_cfgs import PolicyCfg
 
 logger = logging.getLogger(__name__)
+
+PolicyObs: TypeAlias = np.ndarray | dict[str, np.ndarray]
 
 
 class Policy(ABC):
@@ -37,6 +40,7 @@ class Policy(ABC):
             policy_file = self.cfg_policy.policy_file
             logger.debug(f"Loading jit from {policy_file}...")
             self.model = torch.jit.load(policy_file, map_location=self.device)
+            print(self.model._c._get_method("forward").schema)
 
         self.action_scale = self.cfg_policy.action_scale
         self.action_clip = self.cfg_policy.action_clip
@@ -70,10 +74,12 @@ class Policy(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_observation(self, env_data, ctrl_data) -> tuple[np.ndarray, dict]:
+    def get_observation(self, env_data, ctrl_data) -> tuple[PolicyObs, dict]:
         raise NotImplementedError
 
-    def get_action(self, obs: np.ndarray) -> np.ndarray:
+    def get_action(self, obs: PolicyObs) -> np.ndarray:
+        if not isinstance(obs, np.ndarray):
+            raise TypeError("Base Policy expects ndarray observations.")
         obs_tensor = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
         with torch.no_grad():
             actions_tensor = self.model(obs_tensor).cpu()

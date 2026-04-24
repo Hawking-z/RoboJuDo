@@ -93,6 +93,7 @@ class RobotConfig:
 
         self.sensors: Dict[str, SensorSpec] = {}
         self.obs_map: Dict[str, ObsSpec] = {}
+        self.deploy_obs_heads: List[str] = []
 
         self.clip_obs: float = 0.0
         self.clip_actions: float = 0.0
@@ -298,7 +299,20 @@ class RobotConfig:
             ospec.final_dim = ospec.history_len * ospec.per_step_dim
 
             cfg.obs_map[ospec.name] = ospec
+        
+        if node_has(root, "deploy_obs_heads"):
+            cfg.deploy_obs_heads = as_vec_s(root["deploy_obs_heads"])
+        else:
+            cfg.deploy_obs_heads = list(cfg.obs_map.keys())
 
+        if not cfg.deploy_obs_heads:
+            raise RuntimeError("deploy_obs_heads 不能为空")
+
+        missing_deploy_obs = [name for name in cfg.deploy_obs_heads if name not in cfg.obs_map]
+        if missing_deploy_obs:
+            raise RuntimeError(
+                f"deploy_obs_heads 引用了未知 obs head: {', '.join(missing_deploy_obs)}"
+            )
         return cfg
 
 if __name__ == "__main__":

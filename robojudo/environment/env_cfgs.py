@@ -8,6 +8,7 @@ from robojudo.tools.tool_cfgs import DoFConfig, ForwardKinematicCfg, ZedOdometry
 
 class ExternalPerceptionDebugCfg(Config):
     show_camera_windows: bool = False
+    draw_camera_frustum: bool = True
     draw_height_points: bool = True
 
 

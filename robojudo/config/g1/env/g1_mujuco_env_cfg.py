@@ -1,3 +1,5 @@
+import numpy as np
+
 from robojudo.environment.env_cfgs import MujocoEnvCfg
 
 from .g1_env_cfg import G1_12EnvCfg, G1_23EnvCfg, G1EnvCfg
@@ -38,15 +40,18 @@ class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
     external_perception: ExternalPerceptionCfg = ExternalPerceptionCfg(
         enabled=True,
         cameras={
-            "front": MujocoCameraPerceptionCfg(
+            "d435i": MujocoCameraPerceptionCfg(
                 link_name="torso_link",
-                resolution=[320, 240],
-                hfov=75.0,
-                pos=[0.22, 0.0, 0.10],
-                rot=[0.0, 0.30, 0.0],
-                near=0.2,
-                far=4.0,
-                render_mode="both",
+                resolution=[480, 270],
+                hfov=89.51,
+                pos=[
+                    0.04764571478 + 0.0039635,
+                    0.015,
+                    0.46268178553 - 0.044 + 0.016,],
+                rot=[np.radians(0.4), np.radians(48),0],
+                near=0.3,
+                far=3.0,
+                render_mode="depth",
             ),
         },
         terrain=TerrainPerceptionCfg(
@@ -69,7 +74,8 @@ class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
             },
         ),
         debug=ExternalPerceptionDebugCfg(
-            show_camera_windows=True,
+            show_camera_windows=False,
             draw_height_points=True,
+            draw_camera_frustum=True,
         ),
     )
