@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -7,7 +8,8 @@ import numpy as np
 class RingBuffer:
     def __init__(self, length: int, data_shape: Tuple[int, ...], dtype=np.float32):
         self.length = int(length)
-        self.buf = np.zeros((self.length, *tuple(data_shape)), dtype=dtype)
+        self.shape = tuple(data_shape)
+        self.buf = np.zeros((self.length, *self.shape), dtype=dtype)
         self.head = 0
 
     def push(self, x: np.ndarray) -> None:
@@ -19,19 +21,34 @@ class RingBuffer:
             raise ValueError(f"count must be in [1, {self.length}], got {count}.")
         start = (self.head - count) % self.length
         if start + count <= self.length:
-            return self.buf[start:start + count].copy()
-        return np.concatenate((self.buf[start:], self.buf[:start + count - self.length]), axis=0)
+            return self.buf[start : start + count].copy()
+        return np.concatenate((self.buf[start:], self.buf[: start + count - self.length]), axis=0)
 
-    def copy_last_flat_to(self, count: int, out: np.ndarray) -> None:
-        out[...] = self.get_last(count).reshape(out.shape)
+    def copy_last_to(self, count: int, out: np.ndarray) -> None:
+        out[...] = self.get_last(count)
 
     def reset(self) -> None:
         self.buf.fill(0)
         self.head = 0
 
 
+@dataclass(frozen=True)
+class _HeadSourceSpec:
+    kind: str
+    source_name: str
+    C: int
+    start: int
+    end: int
+    tail_shape: Tuple[int, ...]
+    front_shape: Tuple[int, ...]
+    sensor_idx: int = -1
+    dep_head: str = ""
+
+
 class ObsAssembler:
-    """Numpy observation assembler for one robot environment."""
+    """Single-env numpy obs assembler aligned with the main ObsAssembler abstraction."""
+
+    NOISE_SUFFIX = "_noise"
 
     def __init__(
         self,
@@ -43,12 +60,12 @@ class ObsAssembler:
     ):
         self.dtype = np.dtype(dtype)
         self.clip_observations = float(clip_observations)
-        self._do_clip = self.clip_observations > 0
+        self._do_clip = self.clip_observations > 0.0
 
         self._build_constants(sensors)
         self._build_heads(obs_heads)
         self._alloc_storage()
-        self._alloc_head_history()
+        self._compile_heads()
 
     # ------------------------------------------------------------------
     # Schema parsing
@@ -68,10 +85,9 @@ class ObsAssembler:
         self._name2idx = {name: i for i, name in enumerate(self.names)}
 
         self.shape: List[Tuple[int, ...]] = []
-        self.lead: List[int] = []
-        self.tail: List[Tuple[int, ...]] = []
         self.frames: List[int] = []
         self.stride: List[int] = []
+        self.sensor_numel: List[int] = []
         self.obs_scale: List[np.ndarray] = []
 
         for name in self.names:
@@ -90,112 +106,227 @@ class ObsAssembler:
                 raise ValueError(f"[ObsAssemblerNP] sensor '{name}' stride must be positive, got {stride}.")
 
             self.shape.append(shape)
-            self.lead.append(shape[0])
-            self.tail.append(tuple(shape[1:]))
             self.frames.append(frames)
             self.stride.append(stride)
+            self.sensor_numel.append(int(np.prod(shape, dtype=np.int64)))
             self.obs_scale.append(self._scale(cfg.get("obs_scale", 1.0), shape))
+
+    def _parse_sensor_source(self, token: str) -> Optional[Tuple[int, str]]:
+        if token in self._name2idx:
+            return self._name2idx[token], token
+        return None
 
     def _build_heads(self, heads: Dict[str, dict]) -> None:
         self._head_names: List[str] = list(heads.keys())
-        self.head_sources: Dict[str, List[int]] = {}
-        self.head_histlen: Dict[str, int] = {}
-        self.head_flatten: Dict[str, bool] = {}
-        self.head_tailshape: Dict[str, Tuple[int, ...]] = {}
-        self.S_head: Dict[str, int] = {}
-        self._head_direct_sources: Dict[str, List[Tuple[str, object]]] = {}
         self._head_topo_order: List[str] = []
 
-        raw_sources: Dict[str, List[str]] = {}
-        for head, cfg in heads.items():
+        self.head_histlen: Dict[str, int] = {}
+        self.head_history_mode: Dict[str, str] = {}
+        self.head_tail_ndim: Dict[str, int] = {}
+        self.head_tailshape: Dict[str, Tuple[int, ...]] = {}
+        self.S_head: Dict[str, int] = {}
+        self._head_source_specs: Dict[str, List[_HeadSourceSpec]] = {}
+        self._head_spec: Dict[str, dict] = {}
+        self._head_dep_names: Dict[str, List[str]] = {}
+
+        raw_head_cfg: Dict[str, dict] = {}
+        self._used_idx = set()
+
+        for head_name, cfg in heads.items():
+            if "flatten" in cfg or "mode" in cfg:
+                raise ValueError(
+                    f"[ObsAssemblerNP] Head '{head_name}' uses legacy flatten/mode. "
+                    "Use tail_ndim/history_mode instead."
+                )
+
             sources = cfg.get("sources")
             if sources is None:
-                raise ValueError(f"[ObsAssemblerNP] Head '{head}' must define sources.")
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' must define sources.")
             if isinstance(sources, (str, bytes)) or isinstance(sources, Mapping):
-                raise ValueError(f"[ObsAssemblerNP] Head '{head}' sources must be a sequence of names.")
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' sources must be a sequence of names.")
             try:
-                raw = list(sources)
+                raw_sources = list(sources)
             except TypeError as exc:
-                raise ValueError(f"[ObsAssemblerNP] Head '{head}' sources must be a sequence of names.") from exc
-            if not raw:
-                raise ValueError(f"[ObsAssemblerNP] Head '{head}' must have at least one source.")
-            if any(not isinstance(token, str) for token in raw):
-                raise ValueError(f"[ObsAssemblerNP] Head '{head}' sources must contain only string names.")
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' sources must be a sequence of names.") from exc
+            if not raw_sources:
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' must have at least one source.")
+            if any(not isinstance(token, str) for token in raw_sources):
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' sources must contain only string names.")
 
             history_len = int(cfg.get("history_len", 1))
             if history_len <= 0:
                 raise ValueError(
-                    f"[ObsAssemblerNP] Head '{head}' history_len must be positive, got {history_len}."
+                    f"[ObsAssemblerNP] Head '{head_name}' history_len must be positive, got {history_len}."
                 )
-            flatten = bool(cfg.get("flatten", False))
-            if head in self._name2idx and (raw != [head] or history_len != 1 or not flatten):
+            tail_ndim = int(cfg.get("tail_ndim", 0))
+            if tail_ndim < 0:
+                raise ValueError(f"[ObsAssemblerNP] Head '{head_name}' tail_ndim must be non-negative.")
+            history_mode = str(cfg.get("history_mode", "merge"))
+            if history_mode not in {"keep", "merge"}:
                 raise ValueError(
-                    f"[ObsAssemblerNP] Head '{head}' has the same name as a sensor. "
-                    "Same-name heads are only allowed as sources=[name], history_len=1, flatten=True."
+                    f"[ObsAssemblerNP] Head '{head_name}' history_mode must be 'keep' or 'merge', got {history_mode!r}."
                 )
 
-            raw_sources[head] = raw
-            self.head_histlen[head] = history_len
-            self.head_flatten[head] = flatten
+            raw_head_cfg[head_name] = {
+                "sources": raw_sources,
+                "history_len": history_len,
+                "tail_ndim": tail_ndim,
+                "history_mode": history_mode,
+            }
 
         visit_state: Dict[str, int] = {}
 
-        def visit(head: str, stack: List[str]) -> List[int]:
-            state = visit_state.get(head, 0)
+        def visit(head_name: str) -> None:
+            state = visit_state.get(head_name, 0)
             if state == 2:
-                return self.head_sources[head]
+                return
             if state == 1:
-                cycle = " -> ".join(stack + [head])
-                raise ValueError(f"[ObsAssemblerNP] Head dependency cycle detected: {cycle}.")
+                raise ValueError(f"[ObsAssemblerNP] Head dependency cycle detected at '{head_name}'.")
 
-            visit_state[head] = 1
-            expanded: List[int] = []
-            direct: List[Tuple[str, object]] = []
-            block_dims: List[int] = []
-            block_tails: List[Tuple[int, ...]] = []
+            visit_state[head_name] = 1
+            cfg = raw_head_cfg[head_name]
+            source_specs: List[_HeadSourceSpec] = []
+            source_order: List[str] = []
+            source_ranges: List[Tuple[int, int]] = []
+            source_slices: List[dict] = []
+            dep_names: List[str] = []
+            tail_shape: Optional[Tuple[int, ...]] = None
+            c_offset = 0
 
-            for token in raw_sources[head]:
-                if token in self._name2idx:
-                    sensor_idx = self._name2idx[token]
-                    expanded.append(sensor_idx)
-                    direct.append(("sensor", sensor_idx))
-                    block_dims.append(self.frames[sensor_idx] * self.lead[sensor_idx])
-                    block_tails.append(self.tail[sensor_idx])
-                    continue
-
-                if token not in raw_sources:
-                    raise KeyError(f"[ObsAssemblerNP] unknown sensor or head '{token}' in head '{head}'.")
-
-                visit(token, stack + [head])
-                if not self.head_flatten[token]:
-                    raise ValueError(
-                        f"[ObsAssemblerNP] Head '{head}' references head '{token}', which must have flatten=True."
+            for token in cfg["sources"]:
+                sensor_parsed = self._parse_sensor_source(token)
+                if sensor_parsed is not None:
+                    sensor_idx, display_name = sensor_parsed
+                    sensor_shape = self.shape[sensor_idx]
+                    if cfg["tail_ndim"] > len(sensor_shape):
+                        raise ValueError(
+                            f"[ObsAssemblerNP] Head '{head_name}' tail_ndim={cfg['tail_ndim']} exceeds rank "
+                            f"{len(sensor_shape)} of sensor '{self.names[sensor_idx]}'."
+                        )
+                    if cfg["tail_ndim"] == 0:
+                        source_tail = ()
+                        front_shape = sensor_shape
+                    else:
+                        source_tail = sensor_shape[-cfg["tail_ndim"] :]
+                        front_shape = sensor_shape[: -cfg["tail_ndim"]]
+                    C_i = self.frames[sensor_idx] * int(np.prod(front_shape or (1,), dtype=np.int64))
+                    source_specs.append(
+                        _HeadSourceSpec(
+                            kind="sensor",
+                            source_name=display_name,
+                            C=C_i,
+                            start=c_offset,
+                            end=c_offset + C_i,
+                            tail_shape=source_tail,
+                            front_shape=front_shape,
+                            sensor_idx=sensor_idx,
+                        )
                     )
-                expanded.extend(self.head_sources[token])
-                direct.append(("head", token))
-                block_dims.append(self.head_histlen[token] * self.S_head[token])
-                block_tails.append(self.head_tailshape[token])
+                    self._used_idx.add(sensor_idx)
+                    slice_meta = {
+                        "kind": "sensor",
+                        "source": display_name,
+                        "sensor": self.names[sensor_idx],
+                        "sensor_shape": sensor_shape,
+                        "sensor_frames": self.frames[sensor_idx],
+                    }
+                else:
+                    if token.endswith(self.NOISE_SUFFIX):
+                        base = token[: -len(self.NOISE_SUFFIX)]
+                        if base in raw_head_cfg:
+                            raise ValueError(
+                                f"[ObsAssemblerNP] Head '{head_name}' cannot reference head '{token}' with *_noise suffix."
+                            )
+                        if base in self._name2idx:
+                            raise KeyError(f"[ObsAssemblerNP] noise source '{token}' is unsupported in deployment.")
 
-            base_tail = block_tails[0]
-            for tail in block_tails:
-                if tail != base_tail:
-                    raise ValueError(f"[ObsAssemblerNP] Head '{head}' tail mismatch among sources.")
+                    if token not in raw_head_cfg:
+                        raise KeyError(f"[ObsAssemblerNP] unknown sensor or head '{token}' in head '{head_name}'.")
 
-            self.head_sources[head] = expanded
-            self._head_direct_sources[head] = direct
-            self.head_tailshape[head] = base_tail
-            self.S_head[head] = sum(block_dims)
-            visit_state[head] = 2
-            self._head_topo_order.append(head)
-            return expanded
+                    visit(token)
+                    dep_spec = self._head_spec[token]
+                    source_tail = dep_spec["tail_shape"]
+                    C_i = dep_spec["history_len"] * dep_spec["C_total"]
+                    source_specs.append(
+                        _HeadSourceSpec(
+                            kind="head",
+                            source_name=token,
+                            C=C_i,
+                            start=c_offset,
+                            end=c_offset + C_i,
+                            tail_shape=source_tail,
+                            front_shape=(C_i,),
+                            dep_head=token,
+                        )
+                    )
+                    dep_names.append(token)
+                    slice_meta = {
+                        "kind": "head",
+                        "source": token,
+                        "head": token,
+                        "head_history_len": dep_spec["history_len"],
+                        "head_history_mode": dep_spec["history_mode"],
+                        "head_output_shape": dep_spec["output_shape"],
+                        "ref_shape": (C_i, *source_tail),
+                    }
 
-        for head in self._head_names:
-            visit(head, [])
+                if tail_shape is None:
+                    tail_shape = source_tail
+                elif tail_shape != source_tail:
+                    raise ValueError(
+                        f"[ObsAssemblerNP] Head '{head_name}' tail mismatch among sources: "
+                        f"expected {tail_shape}, got {source_tail} from '{token}'."
+                    )
 
-        used = set()
-        for sources in self.head_sources.values():
-            used.update(sources)
-        self._used_idx = sorted(used)
+                source_order.append(token)
+                source_ranges.append((c_offset, c_offset + C_i))
+                source_slices.append(
+                    {
+                        **slice_meta,
+                        "start": c_offset,
+                        "end": c_offset + C_i,
+                        "C": C_i,
+                    }
+                )
+                c_offset += C_i
+
+            assert tail_shape is not None
+
+            per_step_shape = (c_offset, *tail_shape) if tail_shape else (c_offset,)
+            if cfg["history_mode"] == "keep":
+                output_shape = (cfg["history_len"], *per_step_shape)
+            elif cfg["history_len"] == 1:
+                output_shape = per_step_shape
+            else:
+                output_shape = (cfg["history_len"] * c_offset, *tail_shape) if tail_shape else (cfg["history_len"] * c_offset,)
+
+            self.head_histlen[head_name] = cfg["history_len"]
+            self.head_history_mode[head_name] = cfg["history_mode"]
+            self.head_tail_ndim[head_name] = cfg["tail_ndim"]
+            self.head_tailshape[head_name] = tail_shape
+            self.S_head[head_name] = c_offset
+            self._head_source_specs[head_name] = source_specs
+            self._head_dep_names[head_name] = dep_names
+            self._head_spec[head_name] = {
+                "output_shape": tuple(output_shape),
+                "history_len": cfg["history_len"],
+                "history_mode": cfg["history_mode"],
+                "tail_ndim": cfg["tail_ndim"],
+                "per_step_shape": tuple(per_step_shape),
+                "C_total": c_offset,
+                "tail_shape": tail_shape,
+                "source_order": source_order,
+                "source_ranges": source_ranges,
+                "source_slices": source_slices,
+                "dtype": self.dtype,
+            }
+            self._head_topo_order.append(head_name)
+            visit_state[head_name] = 2
+
+        for head_name in self._head_names:
+            visit(head_name)
+
+        self._used_idx = sorted(self._used_idx)
 
     # ------------------------------------------------------------------
     # Storage
@@ -208,29 +339,59 @@ class ObsAssembler:
         self._tick: List[Optional[int]] = [None] * count
 
         for i in self._used_idx:
-            shape = self.shape[i]
-            frames = self.frames[i]
-            lead = self.lead[i]
-            tail = self.tail[i]
-
+            self.cache[i] = np.zeros((self.frames[i], *self.shape[i]), dtype=self.dtype)
+            if self.frames[i] > 1:
+                self.rings[i] = RingBuffer(self.frames[i], self.shape[i], dtype=self.dtype)
             if self.stride[i] > 1:
                 self._tick[i] = 0
 
-            if frames == 1:
-                self.cache[i] = np.zeros(shape, dtype=self.dtype)
-            else:
-                self.rings[i] = RingBuffer(frames, (lead, *tail), dtype=self.dtype)
-                self.cache[i] = np.zeros((frames * lead, *tail), dtype=self.dtype)
-
-    def _alloc_head_history(self) -> None:
+    def _compile_heads(self) -> None:
+        self._head_step_buf: Dict[str, np.ndarray] = {}
+        self._head_history_buf: Dict[str, np.ndarray] = {}
+        self._head_output_buf: Dict[str, np.ndarray] = {}
+        self._head_ref_buf: Dict[str, np.ndarray] = {}
         self._head_rings: Dict[str, Optional[RingBuffer]] = {}
+        self._head_assignments: Dict[str, List[Tuple[_HeadSourceSpec, np.ndarray, Tuple[int, ...]]]] = {}
+
         for head in self._head_topo_order:
-            history_len = self.head_histlen[head]
+            spec = self._head_spec[head]
+            history_len = spec["history_len"]
+            history_mode = spec["history_mode"]
+            C_total = spec["C_total"]
+            tail_shape = spec["tail_shape"]
+
+            step_shape = (C_total, *tail_shape) if tail_shape else (C_total,)
+            step_buf = np.zeros(step_shape, dtype=self.dtype)
+            self._head_step_buf[head] = step_buf
+
             if history_len == 1:
-                self._head_rings[head] = None
-                continue
-            tail = self.head_tailshape[head]
-            self._head_rings[head] = RingBuffer(history_len, (self.S_head[head], *tail), dtype=self.dtype)
+                history_buf = step_buf.reshape((1, *step_shape))
+                ref_buf = step_buf
+                output_buf = history_buf if history_mode == "keep" else step_buf
+                ring = None
+            else:
+                history_shape = (history_len, *step_shape)
+                history_buf = np.zeros(history_shape, dtype=self.dtype)
+                ref_shape = (history_len * C_total, *tail_shape) if tail_shape else (history_len * C_total,)
+                ref_buf = history_buf.reshape(ref_shape)
+                output_buf = history_buf if history_mode == "keep" else ref_buf
+                ring = RingBuffer(history_len, step_shape, dtype=self.dtype)
+
+            self._head_history_buf[head] = history_buf
+            self._head_output_buf[head] = output_buf
+            self._head_ref_buf[head] = ref_buf
+            self._head_rings[head] = ring
+
+            assignments = []
+            for source_spec in self._head_source_specs[head]:
+                dst = step_buf[source_spec.start : source_spec.end]
+                if source_spec.kind == "head":
+                    src = self._head_ref_buf[source_spec.dep_head]
+                else:
+                    src = self.cache[source_spec.sensor_idx]
+                view_shape = (source_spec.C, *source_spec.tail_shape) if source_spec.tail_shape else (source_spec.C,)
+                assignments.append((source_spec, src, view_shape))
+            self._head_assignments[head] = assignments
 
     # ------------------------------------------------------------------
     # Runtime
@@ -260,41 +421,28 @@ class ObsAssembler:
             name = self.names[i]
             x = self._input_array(name, inputs[name], self.shape[i]) * self.obs_scale[i]
             if self.frames[i] == 1:
-                self.cache[i][...] = x
+                self.cache[i][0] = x
                 continue
 
-            lead = self.lead[i]
-            tail = self.tail[i]
             ring = self.rings[i]
-            ring.push(x.reshape(lead, *tail))
-            ring.copy_last_flat_to(self.frames[i], self.cache[i])
+            ring.push(x)
+            ring.copy_last_to(self.frames[i], self.cache[i])
 
         out: Dict[str, np.ndarray] = {}
         for head in self._head_topo_order:
-            parts = []
-            for kind, data in self._head_direct_sources[head]:
-                if kind == "sensor":
-                    parts.append(self.cache[data])
-                else:
-                    parts.append(out[data])
+            step_buf = self._head_step_buf[head]
+            for source_spec, src, view_shape in self._head_assignments[head]:
+                step_buf[source_spec.start : source_spec.end] = src.reshape(view_shape)
 
-            y = parts[0].copy() if len(parts) == 1 else np.concatenate(parts, axis=0)
             if self._do_clip:
-                np.clip(y, -self.clip_observations, self.clip_observations, out=y)
-
-            history_len = self.head_histlen[head]
-            if history_len == 1:
-                out[head] = y if self.head_flatten[head] else y[np.newaxis, ...]
-                continue
+                np.clip(step_buf, -self.clip_observations, self.clip_observations, out=step_buf)
 
             ring = self._head_rings[head]
-            ring.push(y)
-            history = ring.get_last(history_len)
-            if self.head_flatten[head]:
-                tail = self.head_tailshape[head]
-                out[head] = history.reshape(history_len * self.S_head[head], *tail)
-            else:
-                out[head] = history
+            if ring is not None:
+                ring.push(step_buf)
+                ring.copy_last_to(self.head_histlen[head], self._head_history_buf[head])
+
+            out[head] = self._head_output_buf[head]
 
         return {head: out[head] for head in self._head_names}
 
@@ -306,46 +454,23 @@ class ObsAssembler:
             if self._tick[i] is not None:
                 self._tick[i] = 0
 
-        for ring in self._head_rings.values():
-            if ring is not None:
-                ring.reset()
+        for head in self._head_topo_order:
+            self._head_step_buf[head].fill(0)
+            self._head_history_buf[head].fill(0)
+            if self._head_rings[head] is not None:
+                self._head_rings[head].reset()
 
     # ------------------------------------------------------------------
     # Introspection
     # ------------------------------------------------------------------
 
     def head_output_spec(self) -> Dict[str, dict]:
-        spec = {}
-        for head in self._head_names:
-            history_len = self.head_histlen[head]
-            flatten = self.head_flatten[head]
-            tail = self.head_tailshape[head]
-            per_step_dim = self.S_head[head]
-
-            if history_len == 1:
-                if flatten:
-                    shape = (per_step_dim, *tail)
-                else:
-                    shape = (1, per_step_dim, *tail)
-            else:
-                if flatten:
-                    shape = (history_len * per_step_dim, *tail)
-                else:
-                    shape = (history_len, per_step_dim, *tail)
-
-            spec[head] = {
-                "output_shape": shape,
-                "history_len": history_len,
-                "flatten": flatten,
-                "per_step_dim": per_step_dim,
-                "tail": tail,
-                "dtype": self.dtype,
-            }
-        return spec
+        return {head: dict(self._head_spec[head]) for head in self._head_names}
 
     def info_str(self) -> str:
         def fmt_shape(shape) -> str:
-            return "(" + ", ".join(str(x) for x in tuple(shape)) + ("," if len(tuple(shape)) == 1 else "") + ")"
+            shape = tuple(shape)
+            return "(" + ", ".join(str(x) for x in shape) + ("," if len(shape) == 1 else "") + ")"
 
         lines = [
             "ObsAssemblerNP",
@@ -380,8 +505,7 @@ class ObsAssembler:
 
             lines.append(
                 f"  sensor {name}: shape={fmt_shape(self.shape[i])}, frames={self.frames[i]}, "
-                f"stride={self.stride[i]}, lead={self.lead[i]}, tail={fmt_shape(self.tail[i])}, "
-                f"obs_scale={scale_desc}, used={i in used}, " + ", ".join(storage)
+                f"stride={self.stride[i]}, obs_scale={scale_desc}, used={i in used}, " + ", ".join(storage)
             )
 
         lines.extend(["", "Heads:"])
@@ -389,29 +513,23 @@ class ObsAssembler:
         for head in self._head_names:
             source_names = []
             blocks = []
-            offset = 0
-            for kind, data in self._head_direct_sources[head]:
-                if kind == "sensor":
-                    source_name = self.names[data]
-                    width = self.frames[data] * self.lead[data]
-                    tail = self.tail[data]
+            for source_slice in spec[head]["source_slices"]:
+                source_names.append(source_slice["source"])
+                if source_slice["kind"] == "sensor":
+                    detail = f"sensor={source_slice['sensor']}"
                 else:
-                    source_name = data
-                    width = self.head_histlen[data] * self.S_head[data]
-                    tail = self.head_tailshape[data]
-                source_names.append(source_name)
+                    detail = f"head={source_slice['head']}"
                 blocks.append(
-                    f"{source_name}[{offset}:{offset + width}, tail={fmt_shape(tail)}]"
+                    f"{source_slice['source']}[{source_slice['start']}:{source_slice['end']}, {detail}]"
                 )
-                offset += width
 
             ring = self._head_rings[head]
             history_storage = "none" if ring is None else f"ring_shape={fmt_shape(ring.buf.shape)}, ring_head={ring.head}"
             lines.append(
                 f"  head {head}: sources=[{', '.join(source_names)}], history_len={self.head_histlen[head]}, "
-                f"flatten={self.head_flatten[head]}, per_step_dim={self.S_head[head]}, "
-                f"tail={fmt_shape(self.head_tailshape[head])}, output_shape={fmt_shape(spec[head]['output_shape'])}, "
-                f"history_storage={history_storage}"
+                f"history_mode={self.head_history_mode[head]}, tail_ndim={self.head_tail_ndim[head]}, "
+                f"C_total={self.S_head[head]}, tail={fmt_shape(self.head_tailshape[head])}, "
+                f"output_shape={fmt_shape(spec[head]['output_shape'])}, history_storage={history_storage}"
             )
             lines.append(f"    blocks: {', '.join(blocks)}")
 
@@ -421,29 +539,16 @@ class ObsAssembler:
 
     def print_info(self) -> None:
         print(self.info_str())
-    
+
 
 if __name__ == "__main__":
     sensors = {
-        "a": {"shape": (18,32), "frames": 8, "stride": 5},
-        "b": {"shape": (4,), "frames": 2, "stride": 1},
-        "c": {"shape": (3,), "frames": 1, "stride": 1},
-        
+        "a": {"shape": (2,), "frames": 2, "stride": 1},
+        "b": {"shape": (1,), "frames": 1, "stride": 2},
     }
     heads = {
-        "h1": {"sources": ["a"], "history_len": 1, "flatten": False},
-        
+        "props": {"sources": ["a", "b"], "history_len": 3, "tail_ndim": 0, "history_mode": "keep"},
+        "actor": {"sources": ["props"], "history_len": 1, "tail_ndim": 0, "history_mode": "merge"},
     }
     assembler = ObsAssembler(sensors, heads, clip_observations=10.0)
     assembler.print_info()
-    inputs = {
-        "a": np.arange(18*32).reshape(18,32),
-        "b": [3.0, 4.0, 5.0, 6.0],
-        "c": [7.0, 8.0, 9.0],
-    }
-    for t in range(10):
-        print(f"Step {t}:")
-        out = assembler.step(inputs)
-        for head, value in out.items():
-            print(f"  {head}: {value}")
-            print(f"  {head} shape: {value.shape}")

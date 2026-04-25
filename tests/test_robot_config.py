@@ -67,7 +67,8 @@ def _nested_obs_head_config() -> dict:
                     "actions",
                 ],
                 "history_len": 5,
-                "flatten": True,
+                "tail_ndim": 0,
+                "history_mode": "merge",
             },
             "encoder_obs": {
                 "sources": [
@@ -75,7 +76,8 @@ def _nested_obs_head_config() -> dict:
                     "height_scan_noise",
                 ],
                 "history_len": 1,
-                "flatten": True,
+                "tail_ndim": 0,
+                "history_mode": "merge",
             },
             "prop_obs": {
                 "sources": [
@@ -90,7 +92,8 @@ def _nested_obs_head_config() -> dict:
                     "height_scan_noise",
                 ],
                 "history_len": 1,
-                "flatten": True,
+                "tail_ndim": 0,
+                "history_mode": "merge",
             },
         },
         "deploy_heads": ["prop_obs", "encoder_obs"],
@@ -142,6 +145,8 @@ class TestRobotConfig(unittest.TestCase):
 
         self.assertEqual(sensors["height_scan"]["shape"], [5])
         self.assertEqual(obs_heads["encoder_obs"]["sources"], ["encoder_prop_obs", "height_scan"])
+        self.assertEqual(obs_heads["encoder_obs"]["tail_ndim"], 0)
+        self.assertEqual(obs_heads["encoder_obs"]["history_mode"], "merge")
 
         output_spec = assembler.head_output_spec()
         self.assertEqual(output_spec["encoder_prop_obs"]["output_shape"], (80,))

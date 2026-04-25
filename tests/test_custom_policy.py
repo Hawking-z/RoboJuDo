@@ -72,7 +72,8 @@ def _external_sensor_robot_config(sensor_name: str, sensor_shape: list[int]) -> 
         "external_obs": {
             "sources": [sensor_name],
             "history_len": 1,
-            "flatten": True,
+            "tail_ndim": 1,
+            "history_mode": "merge",
         },
     }
 
@@ -553,8 +554,8 @@ class TestCustomPolicy(unittest.TestCase):
         self.assertTrue(cfg.env.external_perception.enabled)
         self.assertTrue(cfg.env.external_perception.debug.show_camera_windows)
         self.assertEqual(cfg.env.external_perception.render_visible_geom_groups, [0, 1, 2])
-        self.assertIn("front", cfg.env.external_perception.cameras)
-        self.assertEqual(cfg.env.external_perception.cameras["front"].render_mode, "both")
+        self.assertIn("d435i", cfg.env.external_perception.cameras)
+        self.assertEqual(cfg.env.external_perception.cameras["d435i"].render_mode, "depth")
         self.assertIn("height_scan", cfg.env.external_perception.terrain.height_samplers)
         self.assertEqual(cfg.env.external_perception.terrain.raycast.geom_groups, [3])
 

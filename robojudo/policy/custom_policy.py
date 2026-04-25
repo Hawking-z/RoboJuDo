@@ -212,7 +212,7 @@ class CustomPolicy(Policy):
             if name in value_getters:
                 value = value_getters[name]()
             else:
-                raise KeyError(f"Sensor '{name}' has no defined value getter in CustomPolicy.")
+                value = self._env_value(env_data, name)
             inputs[name] = np.asarray(value, dtype=np.float32).reshape(spec.shape)
         return inputs, commands, clock_phase
 

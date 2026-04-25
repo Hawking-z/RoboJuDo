@@ -69,19 +69,33 @@ class SensorSpec:
 
 class ObsSpec:
     class SourceSlice:
-        def __init__(self, frames: int = 1, elem_dim: int = 0, offset: int = 0):
-            self.frames = frames
-            self.elem_dim = elem_dim
-            self.offset = offset
+        def __init__(
+            self,
+            kind: str = "sensor",
+            source: str = "",
+            start: int = 0,
+            end: int = 0,
+            C: int = 0,
+            tail_shape: Optional[List[int]] = None,
+        ):
+            self.kind = kind
+            self.source = source
+            self.start = start
+            self.end = end
+            self.C = C
+            self.tail_shape = list(tail_shape or [])
 
     def __init__(self, name: str):
         self.name: str = name
-        self.sources: List[str] = []  # source 名字列表（sensor 或已 flatten 的 obs head）
+        self.sources: List[str] = []  # source 名字列表（sensor / sensor_noise / obs head）
         self.history_len: int = 1
-        self.flatten: bool = True
+        self.tail_ndim: int = 0
+        self.history_mode: str = "merge"
 
-        self.per_step_dim: int = 0  # Σ frames(s)*elem_dim(s)
-        self.final_dim: int = 0     # history_len*per_step_dim
+        self.per_step_dim: int = 0  # C_total
+        self.final_dim: int = 0     # history_len * per_step_dim, used for internal head ref view
+        self.tail_shape: List[int] = []
+        self.output_shape: List[int] = []
 
         # 与 sources 对齐，保存每个 source 在 per_step 向量中的切片信息
         self.slices: List[ObsSpec.SourceSlice] = []
@@ -118,7 +132,8 @@ class RobotConfig:
             name: {
                 "sources": spec.sources,
                 "history_len": spec.history_len,
-                "flatten": spec.flatten,
+                "tail_ndim": spec.tail_ndim,
+                "history_mode": spec.history_mode,
             }
             for name, spec in self.obs_map.items()
         }
@@ -268,14 +283,24 @@ class RobotConfig:
             if not isinstance(on, dict):
                 raise RuntimeError(f"obs {key} 必须是一个 map")
 
+            if node_has(on, "flatten") or node_has(on, "mode"):
+                raise RuntimeError(
+                    f"obs {key} 使用了旧字段 flatten/mode，请改用 tail_ndim/history_mode"
+                )
+
             ospec = ObsSpec(key)
             if not node_has(on, "sources"):
                 raise RuntimeError(f"obs {key} 缺少 sources")
             ospec.sources = as_vec_s(on["sources"])
             ospec.history_len = int(on.get("history_len", 1))
-            ospec.flatten = bool(on.get("flatten", True))
             if ospec.history_len <= 0:
                 raise RuntimeError(f"obs {key} 的 history_len 必须 >=1")
+            ospec.tail_ndim = int(on.get("tail_ndim", 0))
+            if ospec.tail_ndim < 0:
+                raise RuntimeError(f"obs {key} 的 tail_ndim 必须 >=0")
+            ospec.history_mode = str(on.get("history_mode", "merge"))
+            if ospec.history_mode not in ("keep", "merge"):
+                raise RuntimeError(f"obs {key} 的 history_mode 必须是 keep 或 merge")
 
             cfg.obs_map[ospec.name] = ospec
 
@@ -307,45 +332,84 @@ class RobotConfig:
             offset = 0
             clean_sources: List[str] = []
             slices: List[ObsSpec.SourceSlice] = []
+            dep_tail_shape: Optional[List[int]] = None
 
             for raw_src in raw_obs_sources[head_name]:
                 sensor_name = normalize_sensor_source(raw_src)
                 if sensor_name is not None:
                     clean_sources.append(sensor_name)
                     ss = cfg.sensors[sensor_name]
+                    if ospec.tail_ndim > len(ss.shape):
+                        raise RuntimeError(
+                            f"obs {head_name} 的 tail_ndim={ospec.tail_ndim} 超过了 source {sensor_name} 的 rank={len(ss.shape)}"
+                        )
+                    if ospec.tail_ndim == 0:
+                        tail_shape = []
+                        front_shape = list(ss.shape)
+                    else:
+                        tail_shape = list(ss.shape[-ospec.tail_ndim:])
+                        front_shape = list(ss.shape[:-ospec.tail_ndim])
+                    C_i = ss.frames * (product(front_shape) if front_shape else 1)
+                    if dep_tail_shape is None:
+                        dep_tail_shape = list(tail_shape)
+                    elif dep_tail_shape != list(tail_shape):
+                        raise RuntimeError(
+                            f"obs {head_name} 的 source tail 不一致，期望 {dep_tail_shape}，实际 {tail_shape}"
+                        )
                     slices.append(
                         ObsSpec.SourceSlice(
-                            frames=ss.frames,
-                            elem_dim=ss.elem_dim,
-                            offset=offset,
+                            kind="sensor",
+                            source=sensor_name,
+                            start=offset,
+                            end=offset + C_i,
+                            C=C_i,
+                            tail_shape=tail_shape,
                         )
                     )
-                    offset += ss.frames * ss.elem_dim
+                    offset += C_i
                     continue
+
+                if raw_src.endswith("_noise"):
+                    base = raw_src[:-len("_noise")]
+                    if base in cfg.obs_map:
+                        raise RuntimeError(f"obs {head_name} 不能引用带 _noise 后缀的 obs head: {raw_src}")
 
                 if raw_src not in cfg.obs_map:
                     raise RuntimeError(f"obs {head_name} 引用了未知 sensor 或 obs head: {raw_src}")
 
                 dep_spec = resolve_obs_head(raw_src, stack + [head_name])
-                if not dep_spec.flatten:
-                    raise RuntimeError(
-                        f"obs {head_name} 引用了 obs head {raw_src}，但后者 flatten 必须为 true"
-                    )
-
                 clean_sources.append(raw_src)
+                tail_shape = list(dep_spec.tail_shape)
+                if dep_tail_shape is None:
+                    dep_tail_shape = list(tail_shape)
+                elif dep_tail_shape != list(tail_shape):
+                    raise RuntimeError(
+                        f"obs {head_name} 的 source tail 不一致，期望 {dep_tail_shape}，实际 {tail_shape}"
+                    )
+                C_i = dep_spec.final_dim
                 slices.append(
                     ObsSpec.SourceSlice(
-                        frames=dep_spec.history_len,
-                        elem_dim=dep_spec.per_step_dim,
-                        offset=offset,
+                        kind="head",
+                        source=raw_src,
+                        start=offset,
+                        end=offset + C_i,
+                        C=C_i,
+                        tail_shape=tail_shape,
                     )
                 )
-                offset += dep_spec.final_dim
+                offset += C_i
 
             ospec.sources = clean_sources
             ospec.slices = slices
             ospec.per_step_dim = offset
             ospec.final_dim = ospec.history_len * ospec.per_step_dim
+            ospec.tail_shape = dep_tail_shape or []
+            if ospec.history_mode == "keep":
+                ospec.output_shape = [ospec.history_len, ospec.per_step_dim, *ospec.tail_shape]
+            elif ospec.history_len == 1:
+                ospec.output_shape = [ospec.per_step_dim, *ospec.tail_shape]
+            else:
+                ospec.output_shape = [ospec.final_dim, *ospec.tail_shape]
             visit_state[head_name] = 2
             return ospec
 

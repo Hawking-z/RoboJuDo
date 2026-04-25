@@ -272,7 +272,8 @@ obs_config:
     - dof_vel
     - actions
     history_len: 1
-    flatten: true
+    tail_ndim: 0
+    history_mode: merge
 pd_rate: 200.0
 infer_rate: 50.00000111758712
 clip_actions: 10.0

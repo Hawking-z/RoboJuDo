@@ -203,6 +203,8 @@ class CustomPolicyCfg(PolicyCfg):
         self.action_scale = robot_cfg.dof.scale.tolist()
         self.action_clip = robot_cfg.clip_actions if robot_cfg.clip_actions > 0 else None
         self.deploy_obs_heads = list(robot_cfg.deploy_obs_heads)
+        if "command_stand" in robot_cfg.sensors:
+            self.use_command_stand = True
         return self
 
 
