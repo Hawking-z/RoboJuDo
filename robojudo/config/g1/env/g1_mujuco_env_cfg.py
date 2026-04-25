@@ -56,25 +56,25 @@ class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
         },
         terrain=TerrainPerceptionCfg(
             raycast=TerrainRaycastCfg(
-                origin_z_offset=5.0,
+                origin_z_offset=10.0,
                 geom_groups=[3],
                 miss_value=100.0,
             ),
             height_samplers={
                 "height_scan": TerrainHeightSamplerCfg(
-                    link="torso_link",
+                    link="pelvis",
                     follow="yaw",
                     offset=[0.10, 0.0, 0.0],
                     points={
                         "type": "grid",
-                        "size": [0.8, 0.6],
-                        "resolution": [0.1, 0.1],
+                        "x": [ -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                        "y": [-0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4],
                     },
                 ),
             },
         ),
         debug=ExternalPerceptionDebugCfg(
-            show_camera_windows=False,
+            show_camera_windows=True,
             draw_height_points=True,
             draw_camera_frustum=True,
         ),

@@ -422,3 +422,28 @@ class ObsAssembler:
     def print_info(self) -> None:
         print(self.info_str())
     
+
+if __name__ == "__main__":
+    sensors = {
+        "a": {"shape": (18,32), "frames": 8, "stride": 5},
+        "b": {"shape": (4,), "frames": 2, "stride": 1},
+        "c": {"shape": (3,), "frames": 1, "stride": 1},
+        
+    }
+    heads = {
+        "h1": {"sources": ["a"], "history_len": 1, "flatten": False},
+        
+    }
+    assembler = ObsAssembler(sensors, heads, clip_observations=10.0)
+    assembler.print_info()
+    inputs = {
+        "a": np.arange(18*32).reshape(18,32),
+        "b": [3.0, 4.0, 5.0, 6.0],
+        "c": [7.0, 8.0, 9.0],
+    }
+    for t in range(10):
+        print(f"Step {t}:")
+        out = assembler.step(inputs)
+        for head, value in out.items():
+            print(f"  {head}: {value}")
+            print(f"  {head} shape: {value.shape}")

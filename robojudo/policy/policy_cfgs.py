@@ -136,7 +136,7 @@ class CustomPolicyCfg(PolicyCfg):
 
     obs_dof: DoFConfig = DoFConfig(joint_names=["placeholder"], default_pos=[0.0])
     action_dof: DoFConfig = obs_dof
-
+    use_command_stand: bool = False
     max_cmd: list[float] = [0.8, 0.5, 1.57]
     commands_map: list[list[float]] = [
         [-1.0, 0.0, 1.0],

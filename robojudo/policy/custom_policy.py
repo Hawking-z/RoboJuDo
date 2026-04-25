@@ -95,11 +95,7 @@ class CustomPolicy(Policy):
         self.action_scale = np.asarray(self.cfg_policy.action_scale, dtype=np.float32)
         self.max_cmd = np.asarray(self.cfg_policy.max_cmd, dtype=np.float32)
         self.commands_map = self.cfg_policy.commands_map
-        self.use_command_stand = (
-            "command_stand" in self.robot_cfg.sensors
-            and any("command_stand" in obs.sources for obs in self.robot_cfg.obs_map.values())
-        )
-
+        self.use_command_stand = self.cfg_policy.use_command_stand
         self.reset()
 
     def reset(self):
@@ -186,6 +182,13 @@ class CustomPolicy(Policy):
         def projected_gravity():
             return get_gravity_orientation(self._env_value(env_data, "base_quat"))
 
+
+        def height_scan():
+            base_height = self._env_value(env_data, "base_pos")[2]
+            height_scan = self._env_value(env_data, "height_scan")
+            
+            return np.clip(base_height - height_scan - 0.77, -1.0, 1.0)
+
         value_getters = {
             "base_ang_vel": lambda: self._env_value(env_data, "base_ang_vel"),
             "projected_gravity": projected_gravity,
@@ -200,16 +203,16 @@ class CustomPolicy(Policy):
             "dof_vel": lambda: self._env_value(env_data, "dof_vel"),
             "actions": lambda: self.last_action,
             "last_action": lambda: self.last_action,
+            "height_scan": height_scan,
         }
+        
 
         inputs = {}
         for name, spec in self.robot_cfg.sensors.items():
             if name in value_getters:
                 value = value_getters[name]()
-            elif name.startswith("command_"):
-                value = np.zeros(spec.shape, dtype=np.float32)
             else:
-                value = self._env_value(env_data, name)
+                raise KeyError(f"Sensor '{name}' has no defined value getter in CustomPolicy.")
             inputs[name] = np.asarray(value, dtype=np.float32).reshape(spec.shape)
         return inputs, commands, clock_phase
 

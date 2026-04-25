@@ -2,7 +2,7 @@ import re
 
 import numpy as np
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 def product(v: List[int]) -> int:
     """计算 shape 的乘积，并做合法性检查（完全对应 C++ 的 product 函数）"""
@@ -76,7 +76,7 @@ class ObsSpec:
 
     def __init__(self, name: str):
         self.name: str = name
-        self.sources: List[str] = []  # 传感器名字列表（顺序使用）
+        self.sources: List[str] = []  # source 名字列表（sensor 或已 flatten 的 obs head）
         self.history_len: int = 1
         self.flatten: bool = True
 
@@ -265,6 +265,8 @@ class RobotConfig:
         for key, on in ocfg.items():
             if key == "sensors":
                 continue
+            if not isinstance(on, dict):
+                raise RuntimeError(f"obs {key} 必须是一个 map")
 
             ospec = ObsSpec(key)
             if not node_has(on, "sources"):
@@ -275,33 +277,85 @@ class RobotConfig:
             if ospec.history_len <= 0:
                 raise RuntimeError(f"obs {key} 的 history_len 必须 >=1")
 
+            cfg.obs_map[ospec.name] = ospec
+
+        raw_obs_sources = {
+            name: list(spec.sources)
+            for name, spec in cfg.obs_map.items()
+        }
+        visit_state: Dict[str, int] = {}
+
+        def normalize_sensor_source(src: str) -> Optional[str]:
+            if src in cfg.sensors:
+                return src
+            if src.endswith("_noise"):
+                base = src[:-len("_noise")]
+                if base in cfg.sensors:
+                    return base
+            return None
+
+        def resolve_obs_head(head_name: str, stack: List[str]) -> ObsSpec:
+            state = visit_state.get(head_name, 0)
+            if state == 2:
+                return cfg.obs_map[head_name]
+            if state == 1:
+                cycle = " -> ".join(stack + [head_name])
+                raise RuntimeError(f"obs head 依赖存在环: {cycle}")
+
+            visit_state[head_name] = 1
+            ospec = cfg.obs_map[head_name]
             offset = 0
-            clean_sources = []
-            for src in ospec.sources:
-                if src not in cfg.sensors and src.endswith("_noise"):
-                    base = src[:-len("_noise")]
-                    if base in cfg.sensors:
-                        src = base
-                if src not in cfg.sensors:
-                    raise RuntimeError(f"obs {key} 引用了未知 sensor: {src}")
-                clean_sources.append(src)
-                ss = cfg.sensors[src]
-                sl = ObsSpec.SourceSlice(
-                    frames=ss.frames,
-                    elem_dim=ss.elem_dim,
-                    offset=offset
+            clean_sources: List[str] = []
+            slices: List[ObsSpec.SourceSlice] = []
+
+            for raw_src in raw_obs_sources[head_name]:
+                sensor_name = normalize_sensor_source(raw_src)
+                if sensor_name is not None:
+                    clean_sources.append(sensor_name)
+                    ss = cfg.sensors[sensor_name]
+                    slices.append(
+                        ObsSpec.SourceSlice(
+                            frames=ss.frames,
+                            elem_dim=ss.elem_dim,
+                            offset=offset,
+                        )
+                    )
+                    offset += ss.frames * ss.elem_dim
+                    continue
+
+                if raw_src not in cfg.obs_map:
+                    raise RuntimeError(f"obs {head_name} 引用了未知 sensor 或 obs head: {raw_src}")
+
+                dep_spec = resolve_obs_head(raw_src, stack + [head_name])
+                if not dep_spec.flatten:
+                    raise RuntimeError(
+                        f"obs {head_name} 引用了 obs head {raw_src}，但后者 flatten 必须为 true"
+                    )
+
+                clean_sources.append(raw_src)
+                slices.append(
+                    ObsSpec.SourceSlice(
+                        frames=dep_spec.history_len,
+                        elem_dim=dep_spec.per_step_dim,
+                        offset=offset,
+                    )
                 )
-                ospec.slices.append(sl)
-                offset += ss.frames * ss.elem_dim
+                offset += dep_spec.final_dim
 
             ospec.sources = clean_sources
+            ospec.slices = slices
             ospec.per_step_dim = offset
             ospec.final_dim = ospec.history_len * ospec.per_step_dim
+            visit_state[head_name] = 2
+            return ospec
 
-            cfg.obs_map[ospec.name] = ospec
-        
+        for head_name in raw_obs_sources:
+            resolve_obs_head(head_name, [])
+
         if node_has(root, "deploy_obs_heads"):
             cfg.deploy_obs_heads = as_vec_s(root["deploy_obs_heads"])
+        elif node_has(root, "deploy_heads"):
+            cfg.deploy_obs_heads = as_vec_s(root["deploy_heads"])
         else:
             cfg.deploy_obs_heads = list(cfg.obs_map.keys())
 
