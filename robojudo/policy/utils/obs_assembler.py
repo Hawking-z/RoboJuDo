@@ -545,10 +545,23 @@ if __name__ == "__main__":
     sensors = {
         "a": {"shape": (2,), "frames": 2, "stride": 1},
         "b": {"shape": (1,), "frames": 1, "stride": 2},
+        "depth": {"shape": (2,2), "frames": 8, "stride": 5},
     }
     heads = {
         "props": {"sources": ["a", "b"], "history_len": 3, "tail_ndim": 0, "history_mode": "keep"},
         "actor": {"sources": ["props"], "history_len": 1, "tail_ndim": 0, "history_mode": "merge"},
+        "vision": {"sources": ["depth"], "history_len": 1, "tail_ndim": 2, "history_mode": "keep"},
     }
     assembler = ObsAssembler(sensors, heads, clip_observations=10.0)
     assembler.print_info()
+
+    demo_inputs = {
+        "a": np.array([1.0, 2.0]),
+        "b": np.array([3.0]),
+        "depth": np.arange(2*2).reshape((2,2)),
+    }
+    for t in range(10):
+        print(f"Step {t}")
+        out = assembler.step(demo_inputs)
+        for head_name, obs in out.items():
+            print(f"  head {head_name}: obs_shape={obs.shape}, obs=\n{obs}")

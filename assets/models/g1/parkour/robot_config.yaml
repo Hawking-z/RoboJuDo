@@ -2,114 +2,131 @@
 num_actions: 29
 dof_config:
   isaac_order:
-  - left_hip_pitch_joint
-  - right_hip_pitch_joint
-  - waist_yaw_joint
-  - left_hip_roll_joint
-  - right_hip_roll_joint
-  - waist_roll_joint
-  - left_hip_yaw_joint
-  - right_hip_yaw_joint
-  - waist_pitch_joint
-  - left_knee_joint
-  - right_knee_joint
   - left_shoulder_pitch_joint
   - right_shoulder_pitch_joint
-  - left_ankle_pitch_joint
-  - right_ankle_pitch_joint
+  - waist_pitch_joint
   - left_shoulder_roll_joint
   - right_shoulder_roll_joint
-  - left_ankle_roll_joint
-  - right_ankle_roll_joint
+  - waist_roll_joint
   - left_shoulder_yaw_joint
   - right_shoulder_yaw_joint
+  - waist_yaw_joint
   - left_elbow_joint
   - right_elbow_joint
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
   - left_wrist_roll_joint
   - right_wrist_roll_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
   - left_wrist_pitch_joint
   - right_wrist_pitch_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
   - left_wrist_yaw_joint
   - right_wrist_yaw_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
 
   ".*":
-    action_scale: 0.25
-
-  ".*_hip_.*_joint":
-    kp: 100.0
-    kd: 2.0
-    torque_limits: 139.0
+    kp: 14.251
+    kd: 0.907
+    action_scale: 0.4385773241519928
+    torque_limits: 25.0
     default_pos: 0.0
-
-  ".*_hip_yaw_joint":
-    torque_limits: 88.0
-
-  ".*_hip_pitch_joint":
-    default_pos: -0.1
-
-  ".*_knee_joint":
-    kp: 150.0
-    kd: 4.0
-    torque_limits: 139.0
-    default_pos: 0.3
-
-  ".*_ankle_.*_joint":
-    kp: 40.0
-    kd: 2.0
-    torque_limits: 35.0
-    default_pos: 0.0
-
-  ".*_ankle_pitch_joint":
-    default_pos: -0.2
-
-  "waist_.*_joint":
-    kp: 40.0
-    kd: 5.0
-    torque_limits: 35.0
-    default_pos: 0.0
-
-  "waist_yaw_joint":
-    kp: 200.0
-    torque_limits: 88.0
 
   ".*_shoulder_.*_joint":
-    kp: 40.0
-    kd: 10.0
+    kp: 14.251
+    kd: 0.907
+    action_scale: 0.4385773241519928
     torque_limits: 25.0
     default_pos: 0.0
 
   ".*_shoulder_pitch_joint":
-    default_pos: 0.3
+    default_pos: 0.2
 
   "left_shoulder_roll_joint":
-    default_pos: 0.25
+    default_pos: 0.2
 
   "right_shoulder_roll_joint":
-    default_pos: -0.25
+    default_pos: -0.2
+
+  "waist_(pitch|roll)_joint":
+    kp: 28.501
+    kd: 1.814
+    action_scale: 0.4385773241519928
+    torque_limits: 35.0
+    default_pos: 0.0
+
+  "waist_yaw_joint":
+    kp: 40.179
+    kd: 2.558
+    action_scale: 0.548
+    torque_limits: 88.0
+    default_pos: 0.0
 
   ".*_elbow_joint":
-    kp: 40.0
-    kd: 10.0
+    kp: 14.251
+    kd: 0.907
+    action_scale: 0.4385773241519928
     torque_limits: 25.0
-    default_pos: 0.97
+    default_pos: 0.6
 
   ".*_wrist_roll_joint":
-    kp: 40.0
-    kd: 10.0
+    kp: 14.251
+    kd: 0.907
+    action_scale: 0.4385773241519928
     torque_limits: 25.0
     default_pos: 0.0
 
-  "left_wrist_roll_joint":
-    default_pos: 0.15
-
-  "right_wrist_roll_joint":
-    default_pos: -0.15
-
   ".*_wrist_(pitch|yaw)_joint":
-    kp: 40.0
-    kd: 10.0
+    kp: 16.778
+    kd: 1.068
+    action_scale: 0.075
     torque_limits: 13.4
     default_pos: 0.0
+
+  ".*_hip_pitch_joint":
+    kp: 40.179
+    kd: 2.558
+    action_scale: 0.548
+    torque_limits: 139.0
+    default_pos: -0.312
+
+  ".*_hip_yaw_joint":
+    kp: 40.179
+    kd: 2.558
+    action_scale: 0.548
+    torque_limits: 88.0
+    default_pos: 0.0
+
+  ".*_hip_roll_joint":
+    kp: 99.098
+    kd: 6.309
+    action_scale: 0.351
+    torque_limits: 139.0
+    default_pos: 0.0
+
+  ".*_knee_joint":
+    kp: 99.098
+    kd: 6.309
+    action_scale: 0.351
+    torque_limits: 139.0
+    default_pos: 0.669
+
+  ".*_ankle_.*_joint":
+    kp: 28.501
+    kd: 1.814
+    action_scale: 0.4385773241519928
+    torque_limits: 35.0
+    default_pos: 0.0
+
+  ".*_ankle_pitch_joint":
+    default_pos: -0.363
 
 
 obs_config:
@@ -117,49 +134,66 @@ obs_config:
     base_ang_vel:
       shape:
       - 3
-      obs_scale: 0.2
-      frames: 5
+      obs_scale: 0.25
+      frames: 8
       stride: 1
     projected_gravity:
       shape:
       - 3
       obs_scale: 1.0
-      frames: 5
+      frames: 8
       stride: 1
-    commands:
+    velocity_commands:
       shape:
       - 3
       obs_scale: 1.0
-      frames: 5
+      frames: 8
       stride: 1
-    dof_pos:
+    joint_pos:
       shape:
       - 29
       obs_scale: 1.0
-      frames: 5
+      frames: 8
       stride: 1
-    dof_vel:
+    joint_vel:
       shape:
       - 29
       obs_scale: 0.05
-      frames: 5
+      frames: 8
       stride: 1
     actions:
       shape:
       - 29
       obs_scale: 1.0
-      frames: 5
+      frames: 8
       stride: 1
-  actor_obs:
+    depth:
+      shape:
+      - 18
+      - 32
+      obs_scale: 1.0
+      frames: 8
+      stride: 5
+  proprio_obs:
     sources:
     - base_ang_vel
     - projected_gravity
-    - commands
-    - dof_pos
-    - dof_vel
+    - velocity_commands
+    - joint_pos
+    - joint_vel
     - actions
     history_len: 1
-    flatten: true
+    tail_ndim: 0
+    history_mode: merge
+  enc_input:
+    sources:
+    - depth
+    history_len: 1
+    tail_ndim: 2
+    history_mode: merge
+deploy_obs_heads:
+- enc_input
+- proprio_obs
 pd_rate: 200.0
 infer_rate: 50.
 clip_actions: 0.0

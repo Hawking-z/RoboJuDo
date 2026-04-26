@@ -32,6 +32,7 @@ from .policy.g1_asap_policy_cfg import G1AsapLocoPolicyCfg, G1AsapPolicyCfg  # n
 from .policy.g1_beyondmimic_policy_cfg import G1BeyondMimicPolicyCfg  # noqa: F401
 from .policy.g1_h2h_policy_cfg import G1H2HPolicyCfg  # noqa: F401
 from .policy.g1_kungfubot_policy_cfg import G1KungfuBotGeneralPolicyCfg, G1KungfuBotPolicyCfg  # noqa: F401
+from .policy.g1_parkour_policy_cfg import G1ParkourPolicyCfg  # noqa: F401
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
 from .policy.g1_twist_policy_cfg import G1TwistPolicyCfg  # noqa: F401
 from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPolicyCfg  # noqa: F401
@@ -95,3 +96,16 @@ class g1_custom_policy_perception(RlPipelineCfg):
     ]
 
     policy: G1CustomPolicyPerceptionCfg = G1CustomPolicyPerceptionCfg()
+
+
+@cfg_registry.register
+class g1_parkour_policy(RlPipelineCfg):
+    robot: str = "g1"
+    env: G1PerceptionMujocoEnvCfg = G1PerceptionMujocoEnvCfg()
+
+    ctrl: list[JoystickCtrlCfg | KeyboardCtrlCfg] = [
+        JoystickCtrlCfg(),
+        KeyboardCtrlCfg(),
+    ]
+
+    policy: G1ParkourPolicyCfg = G1ParkourPolicyCfg()
