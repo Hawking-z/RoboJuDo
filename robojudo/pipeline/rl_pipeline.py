@@ -35,8 +35,18 @@ class PolicyWrapper:
 
         policy_class: type[Policy] = getattr(robojudo.policy, policy_type)
         self.policy: Policy = policy_class(cfg_policy=cfg_policy, device=device)
-        self.obs_adapter = DoFAdapter(env_dof_cfg.joint_names, self.policy.cfg_obs_dof.joint_names)
-        self.actions_adapter = DoFAdapter(self.policy.cfg_action_dof.joint_names, env_dof_cfg.joint_names)
+        self.obs_adapter = DoFAdapter(
+            env_dof_cfg.joint_names,
+            self.policy.cfg_obs_dof.joint_names,
+            src_joint_signs=env_dof_cfg.resolved_joint_signs,
+            tar_joint_signs=self.policy.cfg_obs_dof.resolved_joint_signs,
+        )
+        self.actions_adapter = DoFAdapter(
+            self.policy.cfg_action_dof.joint_names,
+            env_dof_cfg.joint_names,
+            src_joint_signs=self.policy.cfg_action_dof.resolved_joint_signs,
+            tar_joint_signs=env_dof_cfg.resolved_joint_signs,
+        )
 
     def get_observation(self, env_data: Box, ctrl_data: Box):
         env_data_adapted = env_data.copy()

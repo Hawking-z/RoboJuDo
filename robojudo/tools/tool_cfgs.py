@@ -26,11 +26,18 @@ class DoFConfig(Config):
     damping: list[float] | None = None
     torque_limits: list[float] | None = None
     position_limits: list[list[float]] | None = None  # [[min, max], ...]
+    joint_signs: list[float] | None = None
 
     @computed_field
     @property
     def num_dofs(self) -> int:
         return len(self.joint_names)
+
+    @property
+    def resolved_joint_signs(self) -> list[float]:
+        if self.joint_signs is None:
+            return [1.0] * self.num_dofs
+        return [float(sign) for sign in self.joint_signs]
 
     @property
     def prop_keys(self) -> list[str]:
@@ -61,6 +68,11 @@ class DoFConfig(Config):
                     raise ValueError(f"position_limits[{i}] length {len(limits)} is not 2")
                 if limits[0] >= limits[1]:
                     raise ValueError(f"position_limits[{i}] min {limits[0]} is not less than max {limits[1]}")
+        if self.joint_signs is not None:
+            if len(self.joint_signs) != length:
+                raise ValueError(f"joint_signs length {len(self.joint_signs)} does not match num_dofs {length}")
+            if any(sign not in (-1.0, 1.0) for sign in self.joint_signs):
+                raise ValueError("joint_signs values must be -1.0 or 1.0")
 
         # check subset
         if self._subset:

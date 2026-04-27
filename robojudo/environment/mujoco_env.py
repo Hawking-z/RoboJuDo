@@ -181,6 +181,7 @@ class MujocoEnv(Environment):
         if self.update_with_fk:
             fk_info = self.fk()
             self._fk_info = fk_info.copy()
+            
             self._torso_ang_vel = fk_info[self._torso_name]["ang_vel"]
             self._torso_quat = fk_info[self._torso_name]["quat"]
             self._torso_pos = fk_info[self._torso_name]["pos"]
@@ -201,9 +202,12 @@ class MujocoEnv(Environment):
         if hand_pose is not None:
             logger.info("Hand pose-->", hand_pose)
 
+        pd_target = self.apply_pd_target_safety(pd_target)
+
         for _ in range(self.sim_decimation):
             torque = (pd_target - self.dof_pos) * self.stiffness - self.dof_vel * self.damping
-            torque = np.clip(torque, -self.torque_limits, self.torque_limits)
+            if self.torque_limits is not None:
+                torque = np.clip(torque, -self.torque_limits, self.torque_limits)
 
             self.data.ctrl = torque
 

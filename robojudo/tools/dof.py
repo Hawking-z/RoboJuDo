@@ -24,10 +24,12 @@ def merge_dof_cfgs(base_cfg: DoFConfig, override_cfg: DoFConfig) -> DoFConfig:
         value_override = getattr(override_cfg, key)
         if key in ["joint_names"] or value_override is None:
             continue
-        if key not in merged_cfg.prop_keys:
+        if key == "joint_signs":
+            value_raw = merged_cfg.resolved_joint_signs
+        elif key not in merged_cfg.prop_keys:
             raise KeyError(f"Key {key} not in dof_cfg, cannot override")
-
-        value_raw = getattr(merged_cfg, key)
+        else:
+            value_raw = getattr(merged_cfg, key)
         value_override_fitted = dof_adapter.fit(value_override, dim=0, template=value_raw).tolist()
         setattr(merged_cfg, key, value_override_fitted)
         logger.debug(f"[DoF] override {key} with {value_override_fitted}")
@@ -35,12 +37,14 @@ def merge_dof_cfgs(base_cfg: DoFConfig, override_cfg: DoFConfig) -> DoFConfig:
 
 
 class DoFAdapter:
-    def __init__(self, src_joint_names, tar_joint_names):
+    def __init__(self, src_joint_names, tar_joint_names, src_joint_signs=None, tar_joint_signs=None):
         self.src_joint_names = src_joint_names
         self.tar_joint_names = tar_joint_names
 
         self.src_len = len(src_joint_names)
         self.tar_len = len(tar_joint_names)
+        self.src_joint_signs = self._resolve_joint_signs(src_joint_signs, self.src_len, "src_joint_signs")
+        self.tar_joint_signs = self._resolve_joint_signs(tar_joint_signs, self.tar_len, "tar_joint_signs")
 
         self.src_indices = []
         self.tar_indices = []
@@ -51,8 +55,23 @@ class DoFAdapter:
                 self.tar_indices.append(tar_joint_names.index(name))
 
         assert len(self.src_indices) > 0, "Error fitting src and tar joint names, please check the config."
+        self.fit_joint_signs = self.src_joint_signs[self.src_indices] * self.tar_joint_signs[self.tar_indices]
 
-    def fit(self, data, dim=-1, template=None) -> np.ndarray:
+    @staticmethod
+    def _resolve_joint_signs(joint_signs, length: int, name: str) -> np.ndarray:
+        if joint_signs is None:
+            return np.ones(length, dtype=np.float32)
+        joint_signs = np.asarray(joint_signs, dtype=np.float32)
+        assert joint_signs.shape == (length,), f"{name} length must match joint names length"
+        return joint_signs
+
+    def _fit_signs_for(self, values: np.ndarray, dim: int) -> np.ndarray:
+        dim = dim if dim >= 0 else values.ndim + dim
+        shape = [1] * values.ndim
+        shape[dim] = len(self.src_indices)
+        return self.fit_joint_signs.reshape(shape)
+
+    def fit(self, data, dim=-1, template=None, apply_sign: bool = True) -> np.ndarray:
         if type(data) is not np.ndarray:
             data = np.asarray(data)
 
@@ -74,13 +93,19 @@ class DoFAdapter:
             )
 
         if dim == -1:
-            new_data[..., self.tar_indices] = data[..., self.src_indices]
+            fitted_data = data[..., self.src_indices]
+            if apply_sign and np.issubdtype(fitted_data.dtype, np.number):
+                fitted_data = fitted_data * self._fit_signs_for(fitted_data, dim=-1)
+            new_data[..., self.tar_indices] = fitted_data
         else:
             indices = [slice(None)] * len(data.shape)
             indices[dim] = self.tar_indices
             src_indices = [slice(None)] * len(data.shape)
             src_indices[dim] = self.src_indices
-            new_data[tuple(indices)] = data[tuple(src_indices)]
+            fitted_data = data[tuple(src_indices)]
+            if apply_sign and np.issubdtype(fitted_data.dtype, np.number):
+                fitted_data = fitted_data * self._fit_signs_for(fitted_data, dim=dim)
+            new_data[tuple(indices)] = fitted_data
 
         return new_data
 

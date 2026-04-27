@@ -112,6 +112,14 @@ class G1_29DoF(DoFConfig):
         ],
     ]
 
+    joint_signs: list[float] | None = [
+        *[1, 1, 1, 1, 1, 1],
+        *[1, 1, 1, 1, 1, 1],
+        *[1, 1, 1],
+        *[1, 1, 1, 1, 1, 1, 1],
+        *[1, 1, 1, 1, 1, 1, 1],
+    ]
+
 
 class G1_23DoF(G1_29DoF):
     # num_dofs as 23

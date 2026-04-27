@@ -60,13 +60,63 @@ class Environment(ABC):
         self.default_pos = np.asarray(dof_config.default_pos)
         self.stiffness = np.asarray(dof_config.stiffness)
         self.damping = np.asarray(dof_config.damping)
-        self.torque_limits = np.asarray(dof_config.torque_limits)
-        self.position_limits = np.asarray(dof_config.position_limits)
+        self.torque_limits = None if dof_config.torque_limits is None else np.asarray(dof_config.torque_limits)
+        self.position_limits = (
+            None if dof_config.position_limits is None else np.asarray(dof_config.position_limits)
+        )
 
         self.set_gains(self.stiffness, self.damping)  # TODO: temp solution
 
         # if self.kinematics is not None: # TODO: check usage
         #     self.kinematics.update_joint_names_subset(self.joint_names)
+
+    def clip_position_target(self, pd_target) -> np.ndarray:
+        target = np.asarray(pd_target).copy()
+        if not np.issubdtype(target.dtype, np.floating):
+            target = target.astype(np.float32)
+        if self.position_limits is None:
+            return target
+        return np.clip(target, self.position_limits[:, 0], self.position_limits[:, 1])
+
+    def clip_torque_target(self, pd_target, *, dof_pos, dof_vel, stiffness, damping) -> np.ndarray:
+        target = np.asarray(pd_target).copy()
+        if not np.issubdtype(target.dtype, np.floating):
+            target = target.astype(np.float32)
+        if self.torque_limits is None:
+            return target
+
+        dof_pos = np.asarray(dof_pos, dtype=target.dtype)
+        dof_vel = np.asarray(dof_vel, dtype=target.dtype)
+        stiffness = np.asarray(stiffness, dtype=target.dtype)
+        damping = np.asarray(damping, dtype=target.dtype)
+        torque_limits = np.asarray(self.torque_limits, dtype=target.dtype) * float(self.cfg_env.torque_limits_ratio)
+
+        active = np.abs(stiffness) > np.finfo(target.dtype).eps
+        if not np.any(active):
+            return target
+
+        p_limits_low = -torque_limits + damping * dof_vel
+        p_limits_high = torque_limits + damping * dof_vel
+        action_low = np.empty_like(target)
+        action_high = np.empty_like(target)
+        action_low[active] = p_limits_low[active] / stiffness[active] + dof_pos[active]
+        action_high[active] = p_limits_high[active] / stiffness[active] + dof_pos[active]
+
+        lower = np.minimum(action_low[active], action_high[active])
+        upper = np.maximum(action_low[active], action_high[active])
+        target[active] = np.clip(target[active], lower, upper)
+        return target
+
+    def position_safety_violations(self, dof_pos, *, protect_ratio: float) -> np.ndarray:
+        if self.position_limits is None:
+            return np.array([], dtype=np.int64)
+
+        pos = np.asarray(dof_pos)
+        joint_pos_mid = (self.position_limits[:, 1] + self.position_limits[:, 0]) / 2.0
+        joint_pos_range = (self.position_limits[:, 1] - self.position_limits[:, 0]) / 2.0
+        high = joint_pos_mid + joint_pos_range * protect_ratio
+        low = joint_pos_mid - joint_pos_range * protect_ratio
+        return np.flatnonzero((pos > high) | (pos < low))
 
     def set_born_place(self, quat: np.ndarray | None = None, pos: np.ndarray | None = None):
         """Need to be called with real quat and pos from subclass"""
@@ -89,12 +139,35 @@ class Environment(ABC):
             raise ValueError("Kinematics model not initialized.")
         fk_info = self.kinematics.forward(
             joint_pos=self.dof_pos,
+            joint_vel=self.dof_vel,
             base_pos=self.base_pos,
             base_quat=self.base_quat,
             base_ang_vel=self.base_ang_vel,
             base_lin_vel=self.base_lin_vel,
         )
         return fk_info
+
+    def apply_pd_target_safety(self, pd_target) -> np.ndarray:
+        target = np.asarray(pd_target).copy()
+        if self.cfg_env.clip_position_limits:
+            target = self.clip_position_target(target)
+        if self.cfg_env.clip_torque_limits:
+            target = self.clip_torque_target(
+                target,
+                dof_pos=self.dof_pos,
+                dof_vel=self.dof_vel,
+                stiffness=self.stiffness,
+                damping=self.damping,
+            )
+        return target
+
+    def unsafe_dof_position_indices(self) -> np.ndarray:
+        if self.cfg_env.joint_pos_protect_ratio is None:
+            return np.array([], dtype=np.int64)
+        return self.position_safety_violations(
+            self.dof_pos,
+            protect_ratio=self.cfg_env.joint_pos_protect_ratio,
+        )
 
     @abstractmethod
     def step(self, pd_target, hand_pose=None):

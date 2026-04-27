@@ -130,8 +130,19 @@ class MujocoKinematics:
             name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i)  # pyright: ignore[reportAttributeAccessIssue]
             pos = self.data.xpos[i].copy()
             quat = self.data.xquat[i].copy()[[1, 2, 3, 0]]  # [x, y, z, w]
-            lin_vel = self.data.cvel[i].copy()[3:]  # cvel = [ang, lin]
-            ang_vel = self.data.cvel[i].copy()[0:3]
+
+            vel_w = np.zeros(6)
+            mujoco.mj_objectVelocity(
+                self.model,
+                self.data,
+                mujoco.mjtObj.mjOBJ_BODY,
+                i,
+                vel_w,
+                1,  # local orientation
+            )
+
+            lin_vel = vel_w[3:]
+            ang_vel = vel_w[0:3]
             body_info[name] = dict(
                 pos=pos,
                 quat=quat,

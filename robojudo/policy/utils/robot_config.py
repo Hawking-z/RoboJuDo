@@ -44,6 +44,7 @@ DOF_PARAM_FIELDS = {
     "action_scale": "scale",
     "torque_limits": "torque_limits",
     "default_pos": "default_pos",
+    "joint_signs": "joint_signs",
 }
 
 
@@ -57,6 +58,7 @@ class DofConfig:
         self.scale: np.ndarray = None
         self.torque_limits: np.ndarray = None
         self.default_pos: np.ndarray = None
+        self.joint_signs: np.ndarray = None  # ±1, 默认全 1
 
 class SensorSpec:
     def __init__(self, name: str):
@@ -193,10 +195,13 @@ class RobotConfig:
         cfg.dof.scale = init_vec()
         cfg.dof.torque_limits = init_vec()
         cfg.dof.default_pos = init_vec()
+        cfg.dof.joint_signs = np.ones(DOF, dtype=np.float32)
         assigned = {
             field: np.zeros(DOF, dtype=bool)
             for field in DOF_PARAM_FIELDS
         }
+        for idx in range(DOF):
+            assigned["joint_signs"][idx] = True  # default 1.0 counts as assigned
 
         for rule_name, rule_node in dcfg.items():
             if rule_name == "isaac_order":
@@ -238,6 +243,8 @@ class RobotConfig:
                 raise RuntimeError(f"解析关节参数失败: {rule_name}, 错误: {e}") from e
 
         for field_name in DOF_PARAM_FIELDS:
+            if field_name not in assigned:  # e.g. joint_signs is optional, defaults to 1
+                continue
             missing = [
                 cfg.dof.isaac_order[i]
                 for i, is_set in enumerate(assigned[field_name])

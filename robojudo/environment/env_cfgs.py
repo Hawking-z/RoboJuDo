@@ -8,8 +8,8 @@ from robojudo.tools.tool_cfgs import DoFConfig, ForwardKinematicCfg, ZedOdometry
 
 class ExternalPerceptionDebugCfg(Config):
     show_camera_windows: bool = False
-    draw_camera_frustum: bool = True
-    draw_height_points: bool = True
+    draw_camera_frustum: bool = False
+    draw_height_points: bool = False
 
 
 class MujocoCameraPerceptionCfg(Config):
@@ -111,6 +111,18 @@ class EnvCfg(Config):
 
     dof: DoFConfig
 
+    clip_position_limits: bool = False
+    """Whether to clip PD targets to configured canonical joint position limits."""
+
+    clip_torque_limits: bool = False
+    """Whether to clip real-robot PD targets so the backend PD controller stays within torque limits."""
+
+    torque_limits_ratio: float = 1.0
+    """Scale applied to configured torque limits before torque-limit target clipping."""
+
+    joint_pos_protect_ratio: float | None = None
+    """If set, shutdown-capable envs can reject observed joint positions outside expanded limits."""
+
     forward_kinematic: ForwardKinematicCfg | None = None
     update_with_fk: bool = False
     """Whether to update info from fk"""
@@ -119,6 +131,14 @@ class EnvCfg(Config):
 
     born_place_align: bool = True
     """Whether to align the born place to zero position and heading"""
+
+    @model_validator(mode="after")
+    def check_safety_config(self):
+        if self.torque_limits_ratio <= 0:
+            raise ValueError("torque_limits_ratio must be positive")
+        if self.joint_pos_protect_ratio is not None and self.joint_pos_protect_ratio <= 0:
+            raise ValueError("joint_pos_protect_ratio must be positive")
+        return self
 
 
 class MujocoEnvCfg(EnvCfg):
@@ -139,6 +159,8 @@ class RobotEnvCfg(EnvCfg):
     is_sim: bool = False
     # ====== ENV CONFIGURATION ======
     act: bool = True
+    clip_torque_limits: bool = False
+    joint_pos_protect_ratio: float | None = 1.5
 
     odometry_type: Literal["NONE", "DUMMY", "ZED"] = "NONE"
     zed_cfg: ZedOdometryCfg | None = None

@@ -106,6 +106,15 @@ class UnitreeCppEnv(Environment):
                 [self.robot_state.motor_state.dq[self._dof_idx[i]] for i in range(len(self._dof_idx))],
                 dtype=np.float32,
             )
+        unsafe_indices = self.unsafe_dof_position_indices()
+        if len(unsafe_indices) > 0:
+            for dof_idx in unsafe_indices:
+                logger.error(
+                    f"Joint {dof_idx}(env), {int(dof_idx)}(motor) position out of range at {self._dof_pos[dof_idx]}"
+                )
+            logger.error("The motors and this process shuts down.")
+            self.shutdown()
+            raise SystemExit()
 
         if self.robot == "g1":
             quat = np.array(self.robot_state.imu_state.quaternion, dtype=np.float32)[[1, 2, 3, 0]]
@@ -162,7 +171,7 @@ class UnitreeCppEnv(Environment):
         #     logger.warning(f"JOINT out of LIMIT-> {delta}")
 
         # positions = pd_target_clipped
-        positions = pd_target
+        positions = self.apply_pd_target_safety(pd_target)
         if self.enabled:
             self.unitree.step(positions.tolist())
 

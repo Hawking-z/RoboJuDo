@@ -46,33 +46,33 @@ class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
                 hfov=89.51,
                 pos=[
                     0.04764571478 + 0.0039635,
-                    0.015,
+                    -0.01,
                     0.46268178553 - 0.044 + 0.016,],
-                rot=[np.radians(0.4), np.radians(48),0],
-                near=0.3,
-                far=3.0,
+                rot=[np.radians(0.5), np.radians(48),0],
+                near=0.1,
+                far=2.5,
                 render_mode="depth",
             ),
         },
-        terrain=TerrainPerceptionCfg(
-            raycast=TerrainRaycastCfg(
-                origin_z_offset=10.0,
-                geom_groups=[3],
-                miss_value=100.0,
-            ),
-            height_samplers={
-                "height_scan": TerrainHeightSamplerCfg(
-                    link="pelvis",
-                    follow="yaw",
-                    offset=[0.10, 0.0, 0.0],
-                    points={
-                        "type": "grid",
-                        "x": [ -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-                        "y": [-0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4],
-                    },
-                ),
-            },
-        ),
+        # terrain=TerrainPerceptionCfg(
+        #     raycast=TerrainRaycastCfg(
+        #         origin_z_offset=10.0,
+        #         geom_groups=[3],
+        #         miss_value=100.0,
+        #     ),
+        #     height_samplers={
+        #         "height_scan": TerrainHeightSamplerCfg(
+        #             link="pelvis",
+        #             follow="yaw",
+        #             offset=[0.10, 0.0, 0.0],
+        #             points={
+        #                 "type": "grid",
+        #                 "x": [ -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        #                 "y": [-0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4],
+        #             },
+        #         ),
+        #     },
+        # ),
         debug=ExternalPerceptionDebugCfg(
             show_camera_windows=True,
             draw_height_points=True,

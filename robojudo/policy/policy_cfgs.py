@@ -507,6 +507,7 @@ class CustomPolicyCfg(PolicyCfg):
             stiffness=robot_cfg.dof.kp.tolist(),
             damping=robot_cfg.dof.kd.tolist(),
             torque_limits=robot_cfg.dof.torque_limits.tolist(),
+            joint_signs=robot_cfg.dof.joint_signs.tolist(),
         )
         self.obs_dof = dof_cfg
         self.action_dof = dof_cfg
@@ -526,8 +527,8 @@ class ParkourPolicyCfg(CustomPolicyCfg):
     disable_autoload: bool = True
     model_backend: str = "onnx"
 
-    policy_name: str = "parkour_policy_merged"
-    robot_config_file: str = "assets/models/g1/parkour/robot_config.yaml"
+    policy_name: str = ""
+    robot_config_file: str = ""
 
     depth_sensor_name: str = "depth"
     depth_input_name: str = "enc_input"
@@ -535,12 +536,12 @@ class ParkourPolicyCfg(CustomPolicyCfg):
     depth_resolution: list[int] = [64, 36]
     depth_range: list[float] = [0.0, 2.5]
     depth_output_range: list[float] = [0.0, 1.0]
-    depth_invalid_threshold: float = 0.2
+    depth_invalid_threshold: float = 0.1
     depth_inpaint_radius: float = 3.0
     depth_crop_region: list[int] = [18, 0, 16, 16]
     depth_blind_spot_crop: list[int] = [0, 0, 0, 0]
-    depth_gaussian_kernel_size: int = 0
-    depth_gaussian_sigma: float = 0.0
+    depth_gaussian_kernel_size: int = 3
+    depth_gaussian_sigma: float = 1.0
 
     @property
     def policy_file(self) -> str:

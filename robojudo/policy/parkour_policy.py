@@ -86,7 +86,7 @@ class ParkourPolicy(CustomPolicy):
         clock_phase = self._get_clock_phase()
 
         def projected_gravity():
-            return get_gravity_orientation(self._env_value(env_data, "base_quat"))
+            return get_gravity_orientation(self._env_value(env_data, "torso_quat"))
 
         def height_scan():
             base_height = self._env_value(env_data, "base_pos")[2]
@@ -94,7 +94,7 @@ class ParkourPolicy(CustomPolicy):
             return np.clip(base_height - scan - 0.77, -1.0, 1.0)
 
         value_getters: dict[str, Any] = {
-            "base_ang_vel": lambda: self._env_value(env_data, "base_ang_vel"),
+            "base_ang_vel": lambda: self._env_value(env_data, "torso_ang_vel"),
             "projected_gravity": projected_gravity,
             "base_gravity": projected_gravity,
             "gravity": projected_gravity,
@@ -110,7 +110,7 @@ class ParkourPolicy(CustomPolicy):
             "joint_vel": lambda: self._env_value(env_data, "dof_vel"),
             "actions": lambda: self.last_action,
             "last_action": lambda: self.last_action,
-            "height_scan": height_scan,
+            # "height_scan": height_scan,
             self.depth_sensor_name: lambda: self._process_depth(env_data),
         }
 
