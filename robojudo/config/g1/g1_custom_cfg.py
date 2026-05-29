@@ -10,6 +10,7 @@ from robojudo.pipeline.pipeline_cfgs import (
     RlMultiPolicyPipelineCfg,  # noqa: F401
     RlPipelineCfg,  # noqa: F401
 )
+from robojudo.tools.debug_log import DebugCfg
 
 from .ctrl.g1_beyondmimic_ctrl_cfg import G1BeyondmimicCtrlCfg  # noqa: F401
 from .ctrl.g1_motion_ctrl_cfg import (  # noqa: F401
@@ -32,7 +33,7 @@ from .policy.g1_asap_policy_cfg import G1AsapLocoPolicyCfg, G1AsapPolicyCfg  # n
 from .policy.g1_beyondmimic_policy_cfg import G1BeyondMimicPolicyCfg  # noqa: F401
 from .policy.g1_h2h_policy_cfg import G1H2HPolicyCfg  # noqa: F401
 from .policy.g1_kungfubot_policy_cfg import G1KungfuBotGeneralPolicyCfg, G1KungfuBotPolicyCfg  # noqa: F401
-from .policy.g1_parkour_policy_cfg import G1ParkourPolicyCfg  # noqa: F401
+from .policy.g1_parkour_policy_cfg import G1ParkourPolicyCfg , G1StandPolicyCfg  # noqa: F401
 from .policy.g1_smooth_policy_cfg import G1SmoothPolicyCfg  # noqa: F401
 from .policy.g1_twist_policy_cfg import G1TwistPolicyCfg  # noqa: F401
 from .policy.g1_unitree_policy_cfg import G1UnitreePolicyCfg, G1UnitreeWoGaitPolicyCfg  # noqa: F401
@@ -102,6 +103,7 @@ class g1_custom_policy_perception(RlPipelineCfg):
 class g1_parkour_policy(RlPipelineCfg):
     robot: str = "g1"
     env: G1PerceptionMujocoEnvCfg = G1PerceptionMujocoEnvCfg()
+    debug: DebugCfg = DebugCfg(log_obs=True)
 
     ctrl: list[JoystickCtrlCfg | KeyboardCtrlCfg] = [
         JoystickCtrlCfg(),
@@ -109,3 +111,15 @@ class g1_parkour_policy(RlPipelineCfg):
     ]
 
     policy: G1ParkourPolicyCfg = G1ParkourPolicyCfg()
+
+@cfg_registry.register
+class g1_stand_policy(RlPipelineCfg):
+    robot: str = "g1"
+    env: G1PerceptionMujocoEnvCfg = G1PerceptionMujocoEnvCfg()
+
+    ctrl: list[JoystickCtrlCfg | KeyboardCtrlCfg] = [
+        JoystickCtrlCfg(),
+        KeyboardCtrlCfg(),
+    ]
+
+    policy: G1StandPolicyCfg = G1StandPolicyCfg()

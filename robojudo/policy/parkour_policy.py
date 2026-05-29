@@ -125,3 +125,10 @@ class ParkourPolicy(CustomPolicy):
 
     def debug_viz(self, visualizer: MujocoVisualizer, env_data, ctrl_data, extras):
         super().debug_viz(visualizer, env_data, ctrl_data, extras)
+
+@policy_registry.register
+class StandPolicy(ParkourPolicy):
+    cfg_policy: ParkourPolicyCfg
+
+    def _process_depth(self, env_data) -> np.ndarray:
+        return np.zeros(self.depth_resolution, dtype=np.float32)

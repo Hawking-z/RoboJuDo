@@ -54,28 +54,28 @@ class G1PerceptionMujocoEnvCfg(G1MujocoEnvCfg):
                 render_mode="depth",
             ),
         },
-        # terrain=TerrainPerceptionCfg(
-        #     raycast=TerrainRaycastCfg(
-        #         origin_z_offset=10.0,
-        #         geom_groups=[3],
-        #         miss_value=100.0,
-        #     ),
-        #     height_samplers={
-        #         "height_scan": TerrainHeightSamplerCfg(
-        #             link="pelvis",
-        #             follow="yaw",
-        #             offset=[0.10, 0.0, 0.0],
-        #             points={
-        #                 "type": "grid",
-        #                 "x": [ -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-        #                 "y": [-0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4],
-        #             },
-        #         ),
-        #     },
-        # ),
+        terrain=TerrainPerceptionCfg(
+            raycast=TerrainRaycastCfg(
+                origin_z_offset=10.0,
+                geom_groups=[3],
+                miss_value=100.0,
+            ),
+            height_samplers={
+                "height_scan": TerrainHeightSamplerCfg(
+                    link="pelvis",
+                    follow="yaw",
+                    offset=[0.10, 0.0, 0.0],
+                    points={
+                        "type": "grid",
+                        "x": [ -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                        "y": [-0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4],
+                    },
+                ),
+            },
+        ),
         debug=ExternalPerceptionDebugCfg(
-            show_camera_windows=True,
+            show_camera_windows=False,
             draw_height_points=True,
-            draw_camera_frustum=True,
+            draw_camera_frustum=False,
         ),
     )
